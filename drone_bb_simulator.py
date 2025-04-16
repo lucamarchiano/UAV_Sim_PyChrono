@@ -52,7 +52,7 @@ PI = math.pi
 #%%The main wrapper function starts!-------------------------------------------------------------------------------------------------------
 def WrapperMain_function(target_folder, controller_type, wrapper_control_parameters, wrapper_foldername, wrapper_filename, max_simulation_time, csv_file_path_abnormalities, Wrapper_execution, visualization_flag):
     print("Wrapper loop starts here")
-    global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+    global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
     global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
     global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
     global mu_PD_baseline_tran, Moment_baseline_PI, e_tran, integral_eQe_tran, e_rot, integral_eQe_rot
@@ -995,7 +995,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
     B_theta_ref = np.array([[1],[0]])
     C_theta_ref = np.matrix([225, 0])
     D_theta_ref = 0
+    
+    # Roll KF gain
+    Q_phi = np.diag([1e-3, 1e-3])
+    R_phi = 500;
+    P_phi = linalg.solve_continuous_are(A_phi_ref.T, C_phi_ref.T, Q_phi, R_phi)
+    K_phi = np.dot(np.dot(P_phi, C_phi_ref.T), 1 / R_phi)
+    
+    # Pitch KF gain
+    Q_theta = np.diag([1e-3, 1e-3])
+    R_theta = 500;
+    P_theta = linalg.solve_continuous_are(A_theta_ref.T, C_theta_ref.T, Q_theta, R_theta)
+    K_theta = np.dot(np.dot(P_theta, C_theta_ref.T), 1 / R_theta)
     #########################
+    
 
     #%% Controller gains and TYPE
     
@@ -1177,15 +1190,16 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the PID CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4
             
             state_phi_ref_diff = y[0:2]
             state_theta_ref_diff = y[2:4]
-            integral_position_tracking = y[4:7]
-            integral_angular_error = y[7:10]
-            
+            state_phi_ref_diff_fil = y[4:6]
+            state_theta_ref_diff_fil = y[6:8]
+            integral_position_tracking = y[8:11]
+            integral_angular_error = y[11:14]
             
             mu_tran_raw = mass_total_estimated*(-KP_tran * translational_position_error - KD_tran * (translational_velocity_in_I - translational_velocity_in_I_user) - KI_tran * integral_position_tracking + translational_acceleration_in_I_user).reshape(3,1)
             mu_x_raw = mu_tran_raw[0].item()
@@ -1260,8 +1274,18 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
             pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
             
             
             Jacobian_matrix_inverse = np.matrix([[1, (math.sin(roll)*math.sin(pitch))/math.cos(pitch), (math.cos(roll)*math.sin(pitch))/math.cos(pitch)],
@@ -1278,9 +1302,12 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:7] = translational_position_error
-            dy[7:10] = angular_error
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:11] = translational_position_error
+            dy[11:14] = angular_error
             
+    
         
             return np.array(dy)
         # ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1291,7 +1318,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the MRAC with Baseline CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
             global mu_PD_baseline_tran, Moment_baseline_PI, omega_ref_dot, omega_cmd, omega_cmd_dot, Jacobian_matrix
@@ -1300,16 +1327,18 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             state_phi_ref_diff = y[0:2] # State of the differentiator for phi_ref (roll_ref)
             state_theta_ref_diff = y[2:4] # State of the differentiator for theta_ref (pitch_ref)
-            x_ref_tran = y[4:10] # Reference model state
-            integral_position_tracking_ref = y[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-            K_hat_x_tran = y[13:31] # \hat{K}_x (translational)
-            K_hat_r_tran = y[31:40] # \hat{K}_r (translational)
-            Theta_hat_tran = y[40:58] # \hat{\Theta} (translational)
-            omega_ref = y[58:61] # Reference model rotational dynamics
-            K_hat_x_rot = y[61:70] # \hat{K}_x (rotational)
-            K_hat_r_rot = y[70:79] # \hat{K}_r (rotational)
-            Theta_hat_rot = y[79:97] # \hat{\Theta} (rotational)
-            integral_e_rot = y[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+            state_phi_ref_diff_fil = y[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+            state_theta_ref_diff_fil = y[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+            x_ref_tran = y[8:14] # Reference model state
+            integral_position_tracking_ref = y[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+            K_hat_x_tran = y[17:35] # \hat{K}_x (translational)
+            K_hat_r_tran = y[35:44] # \hat{K}_r (translational)
+            Theta_hat_tran = y[44:62] # \hat{\Theta} (translational)
+            omega_ref = y[62:65] # Reference model rotational dynamics
+            K_hat_x_rot = y[65:74] # \hat{K}_x (rotational)
+            K_hat_r_rot = y[74:83] # \hat{K}_r (rotational)
+            Theta_hat_rot = y[83:101] # \hat{\Theta} (rotational)
+            integral_e_rot = y[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
             
             K_hat_x_tran = np.matrix(K_hat_x_tran.reshape(6,3))
             K_hat_r_tran = np.matrix(K_hat_r_tran.reshape(3,3))
@@ -1394,8 +1423,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
             pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
         
             angular_error_dot = angular_position_dot - angular_position_ref_dot
             
@@ -1435,16 +1476,18 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:10] = x_ref_tran_dot
-            dy[10:13] = translational_position_in_I_ref - translational_position_in_I_user
-            dy[13:31] = K_hat_x_tran_dot.reshape(18,1)
-            dy[31:40] = K_hat_r_tran_dot.reshape(9,1)
-            dy[40:58] = Theta_hat_tran_dot.reshape(18,1)
-            dy[58:61] = omega_ref_dot
-            dy[61:70] = K_hat_x_rot_dot.reshape(9,1)
-            dy[70:79] = K_hat_r_rot_dot.reshape(9,1)
-            dy[79:97] = Theta_hat_rot_dot.reshape(18,1)
-            dy[97:100] = angular_velocity - omega_ref
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:14] = x_ref_tran_dot
+            dy[14:17] = translational_position_in_I_ref - translational_position_in_I_user
+            dy[17:35] = K_hat_x_tran_dot.reshape(18,1)
+            dy[35:44] = K_hat_r_tran_dot.reshape(9,1)
+            dy[44:62] = Theta_hat_tran_dot.reshape(18,1)
+            dy[62:65] = omega_ref_dot
+            dy[65:74] = K_hat_x_rot_dot.reshape(9,1)
+            dy[74:83] = K_hat_r_rot_dot.reshape(9,1)
+            dy[83:101] = Theta_hat_rot_dot.reshape(18,1)
+            dy[101:104] = angular_velocity - omega_ref
          
             return np.array(dy)
         
@@ -1456,7 +1499,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the 2-Layer MRAC with Baseline CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
             global mu_PD_baseline_tran, Moment_baseline_PI, omega_ref_dot
@@ -1464,20 +1507,22 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             state_phi_ref_diff = y[0:2] # State of the differentiator for phi_ref (roll_ref)
             state_theta_ref_diff = y[2:4] # State of the differentiator for theta_ref (pitch_ref)
-            x_ref_tran = y[4:10] # Reference model state
-            integral_position_tracking_ref = y[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-            K_hat_x_tran = y[13:31] # \hat{K}_x (translational)
-            K_hat_r_tran = y[31:40] # \hat{K}_r (translational)
-            Theta_hat_tran = y[40:58] # \hat{\Theta} (translational)
-            omega_ref = y[58:61] # Reference model rotational dynamics
-            K_hat_x_rot = y[61:70] # \hat{K}_x (rotational)
-            K_hat_r_rot = y[70:79] # \hat{K}_r (rotational)
-            Theta_hat_rot = y[79:97] # \hat{\Theta} (rotational)
-            integral_e_rot = y[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-            e_transient_tran = y[100:106] # Transient error dynamics translational (Two-layer) 
-            K_hat_g_tran = y[106:124] # \hat{K}_g translational (Two-layer) 
-            e_transient_rot = y[124:127] # Transient error dynamics rotational (Two-layer) 
-            K_hat_g_rot = y[127:136] # \hat{K}_g (rotational)(Two-layer)
+            state_phi_ref_diff_fil = y[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+            state_theta_ref_diff_fil = y[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+            x_ref_tran = y[8:14] # Reference model state
+            integral_position_tracking_ref = y[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+            K_hat_x_tran = y[17:35] # \hat{K}_x (translational)
+            K_hat_r_tran = y[35:44] # \hat{K}_r (translational)
+            Theta_hat_tran = y[44:62] # \hat{\Theta} (translational)
+            omega_ref = y[62:65] # Reference model rotational dynamics
+            K_hat_x_rot = y[65:74] # \hat{K}_x (rotational)
+            K_hat_r_rot = y[74:83] # \hat{K}_r (rotational)
+            Theta_hat_rot = y[83:101] # \hat{\Theta} (rotational)
+            integral_e_rot = y[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+            e_transient_tran = y[104:110] # Transient error dynamics translational (Two-layer) 
+            K_hat_g_tran = y[110:128] # \hat{K}_g translational (Two-layer) 
+            e_transient_rot = y[128:131] # Transient error dynamics rotational (Two-layer) 
+            K_hat_g_rot = y[131:140] # \hat{K}_g (rotational)(Two-layer)
             
             K_hat_x_tran = np.matrix(K_hat_x_tran.reshape(6,3))
             K_hat_r_tran = np.matrix(K_hat_r_tran.reshape(3,3))
@@ -1570,8 +1615,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
             pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
         
             angular_error_dot = angular_position_dot - angular_position_ref_dot
             
@@ -1613,20 +1670,22 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:10] = x_ref_tran_dot
-            dy[10:13] = translational_position_in_I_ref - translational_position_in_I_user
-            dy[13:31] = K_hat_x_tran_dot.reshape(18,1)
-            dy[31:40] = K_hat_r_tran_dot.reshape(9,1)
-            dy[40:58] = Theta_hat_tran_dot.reshape(18,1)
-            dy[58:61] = omega_ref_dot
-            dy[61:70] = K_hat_x_rot_dot.reshape(9,1)
-            dy[70:79] = K_hat_r_rot_dot.reshape(9,1)
-            dy[79:97] = Theta_hat_rot_dot.reshape(18,1)
-            dy[97:100] = angular_velocity - omega_ref
-            dy[100:106] = e_transient_tran_dot
-            dy[106:124] = K_hat_g_tran_dot.reshape(18,1)
-            dy[124:127] = e_transient_rot_dot
-            dy[127:136] = K_hat_g_rot_dot.reshape(9,1)
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:14] = x_ref_tran_dot
+            dy[14:17] = translational_position_in_I_ref - translational_position_in_I_user
+            dy[17:35] = K_hat_x_tran_dot.reshape(18,1)
+            dy[35:44] = K_hat_r_tran_dot.reshape(9,1)
+            dy[44:62] = Theta_hat_tran_dot.reshape(18,1)
+            dy[62:65] = omega_ref_dot
+            dy[65:74] = K_hat_x_rot_dot.reshape(9,1)
+            dy[74:83] = K_hat_r_rot_dot.reshape(9,1)
+            dy[83:101] = Theta_hat_rot_dot.reshape(18,1)
+            dy[101:104] = angular_velocity - omega_ref
+            dy[104:110] = e_transient_tran_dot
+            dy[110:128] = K_hat_g_tran_dot.reshape(18,1)
+            dy[128:131] = e_transient_rot_dot
+            dy[131:140] = K_hat_g_rot_dot.reshape(9,1)
          
             return np.array(dy)
         
@@ -1637,7 +1696,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the Robust (sigma-mod and e-mod) MRAC with Baseline CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
             global mu_PD_baseline_tran, Moment_baseline_PI, omega_ref_dot
@@ -1645,16 +1704,18 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             state_phi_ref_diff = y[0:2] # State of the differentiator for phi_ref (roll_ref)
             state_theta_ref_diff = y[2:4] # State of the differentiator for theta_ref (pitch_ref)
-            x_ref_tran = y[4:10] # Reference model state
-            integral_position_tracking_ref = y[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-            K_hat_x_tran = y[13:31] # \hat{K}_x (translational)
-            K_hat_r_tran = y[31:40] # \hat{K}_r (translational)
-            Theta_hat_tran = y[40:58] # \hat{\Theta} (translational)
-            omega_ref = y[58:61] # Reference model rotational dynamics
-            K_hat_x_rot = y[61:70] # \hat{K}_x (rotational)
-            K_hat_r_rot = y[70:79] # \hat{K}_r (rotational)
-            Theta_hat_rot = y[79:97] # \hat{\Theta} (rotational)
-            integral_e_rot = y[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+            state_phi_ref_diff_fil = y[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+            state_theta_ref_diff_fil = y[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+            x_ref_tran = y[8:14] # Reference model state
+            integral_position_tracking_ref = y[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+            K_hat_x_tran = y[17:35] # \hat{K}_x (translational)
+            K_hat_r_tran = y[35:44] # \hat{K}_r (translational)
+            Theta_hat_tran = y[44:62] # \hat{\Theta} (translational)
+            omega_ref = y[62:65] # Reference model rotational dynamics
+            K_hat_x_rot = y[65:74] # \hat{K}_x (rotational)
+            K_hat_r_rot = y[74:83] # \hat{K}_r (rotational)
+            Theta_hat_rot = y[83:101] # \hat{\Theta} (rotational)
+            integral_e_rot = y[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
             
             K_hat_x_tran = np.matrix(K_hat_x_tran.reshape(6,3))
             K_hat_r_tran = np.matrix(K_hat_r_tran.reshape(3,3))
@@ -1746,8 +1807,21 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
             pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
         
             angular_error_dot = angular_position_dot - angular_position_ref_dot
             
@@ -1794,16 +1868,18 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:10] = x_ref_tran_dot
-            dy[10:13] = translational_position_in_I_ref - translational_position_in_I_user
-            dy[13:31] = K_hat_x_tran_dot.reshape(18,1)
-            dy[31:40] = K_hat_r_tran_dot.reshape(9,1)
-            dy[40:58] = Theta_hat_tran_dot.reshape(18,1)
-            dy[58:61] = omega_ref_dot
-            dy[61:70] = K_hat_x_rot_dot.reshape(9,1)
-            dy[70:79] = K_hat_r_rot_dot.reshape(9,1)
-            dy[79:97] = Theta_hat_rot_dot.reshape(18,1)
-            dy[97:100] = angular_velocity - omega_ref
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:14] = x_ref_tran_dot
+            dy[14:17] = translational_position_in_I_ref - translational_position_in_I_user
+            dy[17:35] = K_hat_x_tran_dot.reshape(18,1)
+            dy[35:44] = K_hat_r_tran_dot.reshape(9,1)
+            dy[44:62] = Theta_hat_tran_dot.reshape(18,1)
+            dy[62:65] = omega_ref_dot
+            dy[65:74] = K_hat_x_rot_dot.reshape(9,1)
+            dy[74:83] = K_hat_r_rot_dot.reshape(9,1)
+            dy[83:101] = Theta_hat_rot_dot.reshape(18,1)
+            dy[101:104] = angular_velocity - omega_ref
          
             return np.array(dy)
         
@@ -1814,7 +1890,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the Robust (sigma-mod and e-mod) 2-Layer MRAC with Baseline CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
             global mu_PD_baseline_tran, Moment_baseline_PI, omega_ref_dot
@@ -1822,20 +1898,22 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             state_phi_ref_diff = y[0:2] # State of the differentiator for phi_ref (roll_ref)
             state_theta_ref_diff = y[2:4] # State of the differentiator for theta_ref (pitch_ref)
-            x_ref_tran = y[4:10] # Reference model state
-            integral_position_tracking_ref = y[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-            K_hat_x_tran = y[13:31] # \hat{K}_x (translational)
-            K_hat_r_tran = y[31:40] # \hat{K}_r (translational)
-            Theta_hat_tran = y[40:58] # \hat{\Theta} (translational)
-            omega_ref = y[58:61] # Reference model rotational dynamics
-            K_hat_x_rot = y[61:70] # \hat{K}_x (rotational)
-            K_hat_r_rot = y[70:79] # \hat{K}_r (rotational)
-            Theta_hat_rot = y[79:97] # \hat{\Theta} (rotational)
-            integral_e_rot = y[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-            e_transient_tran = y[100:106] # Transient error dynamics translational (Two-layer) 
-            K_hat_g_tran = y[106:124] # \hat{K}_g translational (Two-layer) 
-            e_transient_rot = y[124:127] # Transient error dynamics rotational (Two-layer) 
-            K_hat_g_rot = y[127:136] # \hat{K}_g (rotational)(Two-layer)
+            state_phi_ref_diff_fil = y[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+            state_theta_ref_diff_fil = y[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+            x_ref_tran = y[8:14] # Reference model state
+            integral_position_tracking_ref = y[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+            K_hat_x_tran = y[17:35] # \hat{K}_x (translational)
+            K_hat_r_tran = y[35:44] # \hat{K}_r (translational)
+            Theta_hat_tran = y[44:62] # \hat{\Theta} (translational)
+            omega_ref = y[62:65] # Reference model rotational dynamics
+            K_hat_x_rot = y[65:74] # \hat{K}_x (rotational)
+            K_hat_r_rot = y[74:83] # \hat{K}_r (rotational)
+            Theta_hat_rot = y[83:101] # \hat{\Theta} (rotational)
+            integral_e_rot = y[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+            e_transient_tran = y[104:110] # Transient error dynamics translational (Two-layer) 
+            K_hat_g_tran = y[110:128] # \hat{K}_g translational (Two-layer) 
+            e_transient_rot = y[128:131] # Transient error dynamics rotational (Two-layer) 
+            K_hat_g_rot = y[131:140] # \hat{K}_g (rotational)(Two-layer)
             
             K_hat_x_tran = np.matrix(K_hat_x_tran.reshape(6,3))
             K_hat_r_tran = np.matrix(K_hat_r_tran.reshape(3,3))
@@ -1936,8 +2014,21 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
             pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
         
             angular_error_dot = angular_position_dot - angular_position_ref_dot
             
@@ -1987,20 +2078,22 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:10] = x_ref_tran_dot
-            dy[10:13] = translational_position_in_I_ref - translational_position_in_I_user
-            dy[13:31] = K_hat_x_tran_dot.reshape(18,1)
-            dy[31:40] = K_hat_r_tran_dot.reshape(9,1)
-            dy[40:58] = Theta_hat_tran_dot.reshape(18,1)
-            dy[58:61] = omega_ref_dot
-            dy[61:70] = K_hat_x_rot_dot.reshape(9,1)
-            dy[70:79] = K_hat_r_rot_dot.reshape(9,1)
-            dy[79:97] = Theta_hat_rot_dot.reshape(18,1)
-            dy[97:100] = angular_velocity - omega_ref
-            dy[100:106] = e_transient_tran_dot
-            dy[106:124] = K_hat_g_tran_dot.reshape(18,1)
-            dy[124:127] = e_transient_rot_dot
-            dy[127:136] = K_hat_g_rot_dot.reshape(9,1)
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:14] = x_ref_tran_dot
+            dy[14:17] = translational_position_in_I_ref - translational_position_in_I_user
+            dy[17:35] = K_hat_x_tran_dot.reshape(18,1)
+            dy[35:44] = K_hat_r_tran_dot.reshape(9,1)
+            dy[44:62] = Theta_hat_tran_dot.reshape(18,1)
+            dy[62:65] = omega_ref_dot
+            dy[65:74] = K_hat_x_rot_dot.reshape(9,1)
+            dy[74:83] = K_hat_r_rot_dot.reshape(9,1)
+            dy[83:101] = Theta_hat_rot_dot.reshape(18,1)
+            dy[101:104] = angular_velocity - omega_ref
+            dy[104:110] = e_transient_tran_dot
+            dy[110:128] = K_hat_g_tran_dot.reshape(18,1)
+            dy[128:131] = e_transient_rot_dot
+            dy[131:140] = K_hat_g_rot_dot.reshape(9,1)
          
             return np.array(dy)
         
@@ -2011,7 +2104,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the Hybrid MRAC with Baseline CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
             global mu_PD_baseline_tran, Moment_baseline_PI, e_tran, integral_eQe_tran, e_rot, integral_eQe_rot, omega_ref_dot
@@ -2019,18 +2112,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             state_phi_ref_diff = y[0:2] # State of the differentiator for phi_ref (roll_ref)
             state_theta_ref_diff = y[2:4] # State of the differentiator for theta_ref (pitch_ref)
-            x_ref_tran = y[4:10] # Reference model state
-            integral_position_tracking_ref = y[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-            K_hat_x_tran = y[13:31] # \hat{K}_x (translational)
-            K_hat_r_tran = y[31:40] # \hat{K}_r (translational)
-            Theta_hat_tran = y[40:58] # \hat{\Theta} (translational)
-            omega_ref = y[58:61] # Reference model rotational dynamics
-            K_hat_x_rot = y[61:70] # \hat{K}_x (rotational)
-            K_hat_r_rot = y[70:79] # \hat{K}_r (rotational)
-            Theta_hat_rot = y[79:97] # \hat{\Theta} (rotational)
-            integral_e_rot = y[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-            integral_eQe_tran = y[100] # Integral of e_tran.T * Q_tran * e_tran
-            integral_eQe_rot = y[101] # Integral of e_rot.T * Q_rot * e_rot
+            state_phi_ref_diff_fil = y[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+            state_theta_ref_diff_fil = y[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+            x_ref_tran = y[8:14] # Reference model state
+            integral_position_tracking_ref = y[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+            K_hat_x_tran = y[17:35] # \hat{K}_x (translational)
+            K_hat_r_tran = y[35:44] # \hat{K}_r (translational)
+            Theta_hat_tran = y[44:62] # \hat{\Theta} (translational)
+            omega_ref = y[62:65] # Reference model rotational dynamics
+            K_hat_x_rot = y[65:74] # \hat{K}_x (rotational)
+            K_hat_r_rot = y[74:83] # \hat{K}_r (rotational)
+            Theta_hat_rot = y[83:101] # \hat{\Theta} (rotational)
+            integral_e_rot = y[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+            integral_eQe_tran = y[104] # Integral of e_tran.T * Q_tran * e_tran
+            integral_eQe_rot = y[105] # Integral of e_rot.T * Q_rot * e_rot
             
             K_hat_x_tran = np.matrix(K_hat_x_tran.reshape(6,3))
             K_hat_r_tran = np.matrix(K_hat_r_tran.reshape(3,3))
@@ -2115,8 +2210,22 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
             pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            
+            
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
         
             angular_error_dot = angular_position_dot - angular_position_ref_dot
             
@@ -2156,18 +2265,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:10] = x_ref_tran_dot
-            dy[10:13] = translational_position_in_I_ref - translational_position_in_I_user
-            dy[13:31] = K_hat_x_tran_dot.reshape(18,1)
-            dy[31:40] = K_hat_r_tran_dot.reshape(9,1)
-            dy[40:58] = Theta_hat_tran_dot.reshape(18,1)
-            dy[58:61] = omega_ref_dot
-            dy[61:70] = K_hat_x_rot_dot.reshape(9,1)
-            dy[70:79] = K_hat_r_rot_dot.reshape(9,1)
-            dy[79:97] = Theta_hat_rot_dot.reshape(18,1)
-            dy[97:100] = angular_velocity - omega_ref
-            dy[100] = e_tran.T * Q_tran * e_tran
-            dy[101] = e_rot.T * Q_rot * e_rot
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:14] = x_ref_tran_dot
+            dy[14:17] = translational_position_in_I_ref - translational_position_in_I_user
+            dy[17:35] = K_hat_x_tran_dot.reshape(18,1)
+            dy[35:44] = K_hat_r_tran_dot.reshape(9,1)
+            dy[44:62] = Theta_hat_tran_dot.reshape(18,1)
+            dy[62:65] = omega_ref_dot
+            dy[65:74] = K_hat_x_rot_dot.reshape(9,1)
+            dy[74:83] = K_hat_r_rot_dot.reshape(9,1)
+            dy[83:101] = Theta_hat_rot_dot.reshape(18,1)
+            dy[101:104] = angular_velocity - omega_ref
+            dy[104] = e_tran.T * Q_tran * e_tran
+            dy[105] = e_rot.T * Q_rot * e_rot
          
             return np.array(dy)
         
@@ -2178,7 +2289,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the Hybrid 2-Layer MRAC with Baseline CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
             global mu_PD_baseline_tran, Moment_baseline_PI, epsilon_tran, integral_epsQeps_tran, epsilon_rot, integral_epsQeps_rot
@@ -2187,24 +2298,26 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             state_phi_ref_diff = y[0:2] # State of the differentiator for phi_ref (roll_ref)
             state_theta_ref_diff = y[2:4] # State of the differentiator for theta_ref (pitch_ref)
-            x_ref_tran = y[4:10] # Reference model state
-            integral_position_tracking_ref = y[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-            K_hat_x_tran = y[13:31] # \hat{K}_x (translational)
-            K_hat_r_tran = y[31:40] # \hat{K}_r (translational)
-            Theta_hat_tran = y[40:58] # \hat{\Theta} (translational)
-            omega_ref = y[58:61] # Reference model rotational dynamics
-            K_hat_x_rot = y[61:70] # \hat{K}_x (rotational)
-            K_hat_r_rot = y[70:79] # \hat{K}_r (rotational)
-            Theta_hat_rot = y[79:97] # \hat{\Theta} (rotational)
-            integral_e_rot = y[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-            e_transient_tran = y[100:106] # Transient error dynamics translational (Two-layer) 
-            K_hat_g_tran = y[106:124] # \hat{K}_g translational (Two-layer) 
-            e_transient_rot = y[124:127] # Transient error dynamics rotational (Two-layer) 
-            K_hat_g_rot = y[127:136] # \hat{K}_g (rotational)(Two-layer)
-            integral_epsQeps_tran = y[136] # Integral of epsilon_tran.T * Q_tran_2Layer * epsilon_tran
-            integral_epsQeps_rot = y[137] # Integral of epsilon_rot.T * Q_rot_2Layer * epsilon_rot
-            integral_etQet_tran = y[138] # Integral of e_transient_tran.T * Q_tran_2Layer * e_transient_tran
-            integral_etQet_rot = y[139] # Integral of e_transient_rot.T * Q_rot_2Layer * e_transient_rot
+            state_phi_ref_diff_fil = y[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+            state_theta_ref_diff_fil = y[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+            x_ref_tran = y[8:14] # Reference model state
+            integral_position_tracking_ref = y[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+            K_hat_x_tran = y[17:35] # \hat{K}_x (translational)
+            K_hat_r_tran = y[35:44] # \hat{K}_r (translational)
+            Theta_hat_tran = y[44:62] # \hat{\Theta} (translational)
+            omega_ref = y[62:65] # Reference model rotational dynamics
+            K_hat_x_rot = y[65:74] # \hat{K}_x (rotational)
+            K_hat_r_rot = y[74:83] # \hat{K}_r (rotational)
+            Theta_hat_rot = y[83:101] # \hat{\Theta} (rotational)
+            integral_e_rot = y[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+            e_transient_tran = y[104:110] # Transient error dynamics translational (Two-layer) 
+            K_hat_g_tran = y[110:128] # \hat{K}_g translational (Two-layer) 
+            e_transient_rot = y[128:131] # Transient error dynamics rotational (Two-layer) 
+            K_hat_g_rot = y[131:140] # \hat{K}_g (rotational)(Two-layer)
+            integral_epsQeps_tran = y[140] # Integral of epsilon_tran.T * Q_tran_2Layer * epsilon_tran
+            integral_epsQeps_rot = y[141] # Integral of epsilon_rot.T * Q_rot_2Layer * epsilon_rot
+            integral_etQet_tran = y[142] # Integral of e_transient_tran.T * Q_tran_2Layer * e_transient_tran
+            integral_etQet_rot = y[143] # Integral of e_transient_rot.T * Q_rot_2Layer * e_transient_rot
             
             K_hat_x_tran = np.matrix(K_hat_x_tran.reshape(6,3))
             K_hat_r_tran = np.matrix(K_hat_r_tran.reshape(3,3))
@@ -2296,8 +2409,21 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
             pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
         
             angular_error_dot = angular_position_dot - angular_position_ref_dot
             
@@ -2339,24 +2465,26 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:10] = x_ref_tran_dot
-            dy[10:13] = translational_position_in_I_ref - translational_position_in_I_user
-            dy[13:31] = K_hat_x_tran_dot.reshape(18,1)
-            dy[31:40] = K_hat_r_tran_dot.reshape(9,1)
-            dy[40:58] = Theta_hat_tran_dot.reshape(18,1)
-            dy[58:61] = omega_ref_dot
-            dy[61:70] = K_hat_x_rot_dot.reshape(9,1)
-            dy[70:79] = K_hat_r_rot_dot.reshape(9,1)
-            dy[79:97] = Theta_hat_rot_dot.reshape(18,1)
-            dy[97:100] = angular_velocity - omega_ref
-            dy[100:106] = e_transient_tran_dot
-            dy[106:124] = K_hat_g_tran_dot.reshape(18,1)
-            dy[124:127] = e_transient_rot_dot
-            dy[127:136] = K_hat_g_rot_dot.reshape(9,1)
-            dy[136] = epsilon_tran.T * Q_tran_2Layer * epsilon_tran
-            dy[137] = epsilon_rot.T * Q_rot_2Layer * epsilon_rot
-            dy[138] = e_transient_tran.T * Q_tran_2Layer * e_transient_tran
-            dy[139] = e_transient_rot.T * Q_rot_2Layer * e_transient_rot
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:14] = x_ref_tran_dot
+            dy[14:17] = translational_position_in_I_ref - translational_position_in_I_user
+            dy[17:35] = K_hat_x_tran_dot.reshape(18,1)
+            dy[35:44] = K_hat_r_tran_dot.reshape(9,1)
+            dy[44:62] = Theta_hat_tran_dot.reshape(18,1)
+            dy[62:65] = omega_ref_dot
+            dy[65:74] = K_hat_x_rot_dot.reshape(9,1)
+            dy[74:83] = K_hat_r_rot_dot.reshape(9,1)
+            dy[83:101] = Theta_hat_rot_dot.reshape(18,1)
+            dy[101:104] = angular_velocity - omega_ref
+            dy[104:110] = e_transient_tran_dot
+            dy[110:128] = K_hat_g_tran_dot.reshape(18,1)
+            dy[128:131] = e_transient_rot_dot
+            dy[131:140] = K_hat_g_rot_dot.reshape(9,1)
+            dy[140] = epsilon_tran.T * Q_tran_2Layer * epsilon_tran
+            dy[141] = epsilon_rot.T * Q_rot_2Layer * epsilon_rot
+            dy[142] = e_transient_tran.T * Q_tran_2Layer * e_transient_tran
+            dy[143] = e_transient_rot.T * Q_rot_2Layer * e_transient_rot
          
             return np.array(dy)
         
@@ -2367,7 +2495,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the Hybrid Robust (sigma-mod and e-mod) MRAC with Baseline CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
             global mu_PD_baseline_tran, Moment_baseline_PI, e_tran, integral_eQe_tran, e_rot, integral_eQe_rot, omega_ref_dot
@@ -2375,18 +2503,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             state_phi_ref_diff = y[0:2] # State of the differentiator for phi_ref (roll_ref)
             state_theta_ref_diff = y[2:4] # State of the differentiator for theta_ref (pitch_ref)
-            x_ref_tran = y[4:10] # Reference model state
-            integral_position_tracking_ref = y[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-            K_hat_x_tran = y[13:31] # \hat{K}_x (translational)
-            K_hat_r_tran = y[31:40] # \hat{K}_r (translational)
-            Theta_hat_tran = y[40:58] # \hat{\Theta} (translational)
-            omega_ref = y[58:61] # Reference model rotational dynamics
-            K_hat_x_rot = y[61:70] # \hat{K}_x (rotational)
-            K_hat_r_rot = y[70:79] # \hat{K}_r (rotational)
-            Theta_hat_rot = y[79:97] # \hat{\Theta} (rotational)
-            integral_e_rot = y[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-            integral_eQe_tran = y[100] # Integral of e_tran.T * Q_tran * e_tran
-            integral_eQe_rot = y[101] # Integral of e_rot.T * Q_rot * e_rot
+            state_phi_ref_diff_fil = y[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+            state_theta_ref_diff_fil = y[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+            x_ref_tran = y[8:14] # Reference model state
+            integral_position_tracking_ref = y[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+            K_hat_x_tran = y[17:35] # \hat{K}_x (translational)
+            K_hat_r_tran = y[35:44] # \hat{K}_r (translational)
+            Theta_hat_tran = y[44:62] # \hat{\Theta} (translational)
+            omega_ref = y[62:65] # Reference model rotational dynamics
+            K_hat_x_rot = y[65:74] # \hat{K}_x (rotational)
+            K_hat_r_rot = y[74:83] # \hat{K}_r (rotational)
+            Theta_hat_rot = y[83:101] # \hat{\Theta} (rotational)
+            integral_e_rot = y[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+            integral_eQe_tran = y[104] # Integral of e_tran.T * Q_tran * e_tran
+            integral_eQe_rot = y[105] # Integral of e_rot.T * Q_rot * e_rot
             
             K_hat_x_tran = np.matrix(K_hat_x_tran.reshape(6,3))
             K_hat_r_tran = np.matrix(K_hat_r_tran.reshape(3,3))
@@ -2476,10 +2606,23 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             pitch_ref_dot = np.asarray(C_theta_ref*state_theta_ref_diff).item()
             
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
-            pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
+            pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()            
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
         
             angular_error_dot = angular_position_dot - angular_position_ref_dot
             
@@ -2526,18 +2669,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:10] = x_ref_tran_dot
-            dy[10:13] = translational_position_in_I_ref - translational_position_in_I_user
-            dy[13:31] = K_hat_x_tran_dot.reshape(18,1)
-            dy[31:40] = K_hat_r_tran_dot.reshape(9,1)
-            dy[40:58] = Theta_hat_tran_dot.reshape(18,1)
-            dy[58:61] = omega_ref_dot
-            dy[61:70] = K_hat_x_rot_dot.reshape(9,1)
-            dy[70:79] = K_hat_r_rot_dot.reshape(9,1)
-            dy[79:97] = Theta_hat_rot_dot.reshape(18,1)
-            dy[97:100] = angular_velocity - omega_ref
-            dy[100] = e_tran.T * Q_tran * e_tran
-            dy[101] = e_rot.T * Q_rot * e_rot
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:14] = x_ref_tran_dot
+            dy[14:17] = translational_position_in_I_ref - translational_position_in_I_user
+            dy[17:35] = K_hat_x_tran_dot.reshape(18,1)
+            dy[35:44] = K_hat_r_tran_dot.reshape(9,1)
+            dy[44:62] = Theta_hat_tran_dot.reshape(18,1)
+            dy[62:65] = omega_ref_dot
+            dy[65:74] = K_hat_x_rot_dot.reshape(9,1)
+            dy[74:83] = K_hat_r_rot_dot.reshape(9,1)
+            dy[83:101] = Theta_hat_rot_dot.reshape(18,1)
+            dy[101:104] = angular_velocity - omega_ref
+            dy[104] = e_tran.T * Q_tran * e_tran
+            dy[105] = e_rot.T * Q_rot * e_rot
          
             return np.array(dy)
         
@@ -2548,7 +2693,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the Robust (sigma-mod and e-mod) 2-Layer MRAC with Baseline CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
             global mu_PD_baseline_tran, Moment_baseline_PI, epsilon_tran, integral_epsQeps_tran, epsilon_rot, integral_epsQeps_rot
@@ -2557,24 +2702,26 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             state_phi_ref_diff = y[0:2] # State of the differentiator for phi_ref (roll_ref)
             state_theta_ref_diff = y[2:4] # State of the differentiator for theta_ref (pitch_ref)
-            x_ref_tran = y[4:10] # Reference model state
-            integral_position_tracking_ref = y[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-            K_hat_x_tran = y[13:31] # \hat{K}_x (translational)
-            K_hat_r_tran = y[31:40] # \hat{K}_r (translational)
-            Theta_hat_tran = y[40:58] # \hat{\Theta} (translational)
-            omega_ref = y[58:61] # Reference model rotational dynamics
-            K_hat_x_rot = y[61:70] # \hat{K}_x (rotational)
-            K_hat_r_rot = y[70:79] # \hat{K}_r (rotational)
-            Theta_hat_rot = y[79:97] # \hat{\Theta} (rotational)
-            integral_e_rot = y[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-            e_transient_tran = y[100:106] # Transient error dynamics translational (Two-layer) 
-            K_hat_g_tran = y[106:124] # \hat{K}_g translational (Two-layer) 
-            e_transient_rot = y[124:127] # Transient error dynamics rotational (Two-layer) 
-            K_hat_g_rot = y[127:136] # \hat{K}_g (rotational)(Two-layer)
-            integral_epsQeps_tran = y[136] # Integral of epsilon_tran.T * Q_tran_2Layer * epsilon_tran
-            integral_epsQeps_rot = y[137] # Integral of epsilon_rot.T * Q_rot_2Layer * epsilon_rot
-            integral_etQet_tran = y[138] # Integral of e_transient_tran.T * Q_tran_2Layer * e_transient_tran
-            integral_etQet_rot = y[139] # Integral of e_transient_rot.T * Q_rot_2Layer * e_transient_rot
+            state_phi_ref_diff_fil = y[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+            state_theta_ref_diff_fil = y[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+            x_ref_tran = y[8:14] # Reference model state
+            integral_position_tracking_ref = y[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+            K_hat_x_tran = y[17:35] # \hat{K}_x (translational)
+            K_hat_r_tran = y[35:44] # \hat{K}_r (translational)
+            Theta_hat_tran = y[44:62] # \hat{\Theta} (translational)
+            omega_ref = y[62:65] # Reference model rotational dynamics
+            K_hat_x_rot = y[65:74] # \hat{K}_x (rotational)
+            K_hat_r_rot = y[74:83] # \hat{K}_r (rotational)
+            Theta_hat_rot = y[83:101] # \hat{\Theta} (rotational)
+            integral_e_rot = y[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+            e_transient_tran = y[104:110] # Transient error dynamics translational (Two-layer) 
+            K_hat_g_tran = y[110:128] # \hat{K}_g translational (Two-layer) 
+            e_transient_rot = y[128:131] # Transient error dynamics rotational (Two-layer) 
+            K_hat_g_rot = y[131:140] # \hat{K}_g (rotational)(Two-layer)
+            integral_epsQeps_tran = y[140] # Integral of epsilon_tran.T * Q_tran_2Layer * epsilon_tran
+            integral_epsQeps_rot = y[141] # Integral of epsilon_rot.T * Q_rot_2Layer * epsilon_rot
+            integral_etQet_tran = y[142] # Integral of e_transient_tran.T * Q_tran_2Layer * e_transient_tran
+            integral_etQet_rot = y[143] # Integral of e_transient_rot.T * Q_rot_2Layer * e_transient_rot
             
             K_hat_x_tran = np.matrix(K_hat_x_tran.reshape(6,3))
             K_hat_r_tran = np.matrix(K_hat_r_tran.reshape(3,3))
@@ -2675,8 +2822,21 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
             pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
         
             angular_error_dot = angular_position_dot - angular_position_ref_dot
             
@@ -2726,24 +2886,26 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:10] = x_ref_tran_dot
-            dy[10:13] = translational_position_in_I_ref - translational_position_in_I_user
-            dy[13:31] = K_hat_x_tran_dot.reshape(18,1)
-            dy[31:40] = K_hat_r_tran_dot.reshape(9,1)
-            dy[40:58] = Theta_hat_tran_dot.reshape(18,1)
-            dy[58:61] = omega_ref_dot
-            dy[61:70] = K_hat_x_rot_dot.reshape(9,1)
-            dy[70:79] = K_hat_r_rot_dot.reshape(9,1)
-            dy[79:97] = Theta_hat_rot_dot.reshape(18,1)
-            dy[97:100] = angular_velocity - omega_ref
-            dy[100:106] = e_transient_tran_dot
-            dy[106:124] = K_hat_g_tran_dot.reshape(18,1)
-            dy[124:127] = e_transient_rot_dot
-            dy[127:136] = K_hat_g_rot_dot.reshape(9,1)
-            dy[136] = epsilon_tran.T * Q_tran_2Layer * epsilon_tran
-            dy[137] = epsilon_rot.T * Q_rot_2Layer * epsilon_rot
-            dy[138] = e_transient_tran.T * Q_tran_2Layer * e_transient_tran
-            dy[139] = e_transient_rot.T * Q_rot_2Layer * e_transient_rot
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:14] = x_ref_tran_dot
+            dy[14:17] = translational_position_in_I_ref - translational_position_in_I_user
+            dy[17:35] = K_hat_x_tran_dot.reshape(18,1)
+            dy[35:44] = K_hat_r_tran_dot.reshape(9,1)
+            dy[44:62] = Theta_hat_tran_dot.reshape(18,1)
+            dy[62:65] = omega_ref_dot
+            dy[65:74] = K_hat_x_rot_dot.reshape(9,1)
+            dy[74:83] = K_hat_r_rot_dot.reshape(9,1)
+            dy[83:101] = Theta_hat_rot_dot.reshape(18,1)
+            dy[101:104] = angular_velocity - omega_ref
+            dy[104:110] = e_transient_tran_dot
+            dy[110:128] = K_hat_g_tran_dot.reshape(18,1)
+            dy[128:131] = e_transient_rot_dot
+            dy[131:140] = K_hat_g_rot_dot.reshape(9,1)
+            dy[140] = epsilon_tran.T * Q_tran_2Layer * epsilon_tran
+            dy[141] = epsilon_rot.T * Q_rot_2Layer * epsilon_rot
+            dy[142] = e_transient_tran.T * Q_tran_2Layer * e_transient_tran
+            dy[143] = e_transient_rot.T * Q_rot_2Layer * e_transient_rot
          
             return np.array(dy)
         
@@ -2754,7 +2916,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the Funnel MRAC with Baseline CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
             global mu_PD_baseline_tran, Moment_baseline_PI, omega_ref_dot
@@ -2762,18 +2924,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             state_phi_ref_diff = y[0:2] # State of the differentiator for phi_ref (roll_ref)
             state_theta_ref_diff = y[2:4] # State of the differentiator for theta_ref (pitch_ref)
-            x_ref_tran = y[4:10] # Reference model state
-            integral_position_tracking_ref = y[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-            K_hat_x_tran = y[13:31] # \hat{K}_x (translational)
-            K_hat_r_tran = y[31:40] # \hat{K}_r (translational)
-            Theta_hat_tran = y[40:58] # \hat{\Theta} (translational)
-            omega_ref = y[58:61] # Reference model rotational dynamics
-            K_hat_x_rot = y[61:70] # \hat{K}_x (rotational)
-            K_hat_r_rot = y[70:79] # \hat{K}_r (rotational)
-            Theta_hat_rot = y[79:97] # \hat{\Theta} (rotational)
-            integral_e_rot = y[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-            eta_funnel_tran = y[100] # eta used to compute the translational dynamics funnel diameter
-            eta_funnel_rot = y[101] # eta used to compute the rotational dynamics funnel diameter
+            state_phi_ref_diff_fil = y[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+            state_theta_ref_diff_fil = y[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+            x_ref_tran = y[8:14] # Reference model state
+            integral_position_tracking_ref = y[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+            K_hat_x_tran = y[17:35] # \hat{K}_x (translational)
+            K_hat_r_tran = y[35:44] # \hat{K}_r (translational)
+            Theta_hat_tran = y[44:62] # \hat{\Theta} (translational)
+            omega_ref = y[62:65] # Reference model rotational dynamics
+            K_hat_x_rot = y[65:74] # \hat{K}_x (rotational)
+            K_hat_r_rot = y[74:83] # \hat{K}_r (rotational)
+            Theta_hat_rot = y[83:101] # \hat{\Theta} (rotational)
+            integral_e_rot = y[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+            eta_funnel_tran = y[104] # eta used to compute the translational dynamics funnel diameter
+            eta_funnel_rot = y[105] # eta used to compute the rotational dynamics funnel diameter
             
             K_hat_x_tran = np.matrix(K_hat_x_tran.reshape(6,3))
             K_hat_r_tran = np.matrix(K_hat_r_tran.reshape(3,3))
@@ -2864,8 +3028,21 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
             pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
         
             angular_error_dot = angular_position_dot - angular_position_ref_dot
             
@@ -2912,18 +3089,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:10] = x_ref_tran_dot
-            dy[10:13] = translational_position_in_I_ref - translational_position_in_I_user
-            dy[13:31] = K_hat_x_tran_dot.reshape(18,1)
-            dy[31:40] = K_hat_r_tran_dot.reshape(9,1)
-            dy[40:58] = Theta_hat_tran_dot.reshape(18,1)
-            dy[58:61] = omega_ref_dot
-            dy[61:70] = K_hat_x_rot_dot.reshape(9,1)
-            dy[70:79] = K_hat_r_rot_dot.reshape(9,1)
-            dy[79:97] = Theta_hat_rot_dot.reshape(18,1)
-            dy[97:100] = angular_velocity - omega_ref
-            dy[100] = eta_funnel_tran * xi_funnel_tran
-            dy[101] = eta_funnel_rot * xi_funnel_rot
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:14] = x_ref_tran_dot
+            dy[14:17] = translational_position_in_I_ref - translational_position_in_I_user
+            dy[17:35] = K_hat_x_tran_dot.reshape(18,1)
+            dy[35:44] = K_hat_r_tran_dot.reshape(9,1)
+            dy[44:62] = Theta_hat_tran_dot.reshape(18,1)
+            dy[62:65] = omega_ref_dot
+            dy[65:74] = K_hat_x_rot_dot.reshape(9,1)
+            dy[74:83] = K_hat_r_rot_dot.reshape(9,1)
+            dy[83:101] = Theta_hat_rot_dot.reshape(18,1)
+            dy[101:104] = angular_velocity - omega_ref
+            dy[104] = eta_funnel_tran * xi_funnel_tran
+            dy[105] = eta_funnel_rot * xi_funnel_rot
          
             return np.array(dy)
         
@@ -2934,7 +3113,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the Funnel 2-Layer MRAC with Baseline CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
             global mu_PD_baseline_tran, Moment_baseline_PI, omega_ref_dot
@@ -2942,22 +3121,24 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             state_phi_ref_diff = y[0:2] # State of the differentiator for phi_ref (roll_ref)
             state_theta_ref_diff = y[2:4] # State of the differentiator for theta_ref (pitch_ref)
-            x_ref_tran = y[4:10] # Reference model state
-            integral_position_tracking_ref = y[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-            K_hat_x_tran = y[13:31] # \hat{K}_x (translational)
-            K_hat_r_tran = y[31:40] # \hat{K}_r (translational)
-            Theta_hat_tran = y[40:58] # \hat{\Theta} (translational)
-            omega_ref = y[58:61] # Reference model rotational dynamics
-            K_hat_x_rot = y[61:70] # \hat{K}_x (rotational)
-            K_hat_r_rot = y[70:79] # \hat{K}_r (rotational)
-            Theta_hat_rot = y[79:97] # \hat{\Theta} (rotational)
-            integral_e_rot = y[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-            e_transient_tran = y[100:106] # Transient error dynamics translational (Two-layer) 
-            K_hat_g_tran = y[106:124] # \hat{K}_g translational (Two-layer) 
-            e_transient_rot = y[124:127] # Transient error dynamics rotational (Two-layer) 
-            K_hat_g_rot = y[127:136] # \hat{K}_g (rotational)(Two-layer)
-            eta_funnel_tran = y[136] # eta used to compute the translational dynamics funnel diameter
-            eta_funnel_rot = y[137] # eta used to compute the rotational dynamics funnel diameter
+            state_phi_ref_diff_fil = y[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+            state_theta_ref_diff_fil = y[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+            x_ref_tran = y[8:14] # Reference model state
+            integral_position_tracking_ref = y[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+            K_hat_x_tran = y[17:35] # \hat{K}_x (translational)
+            K_hat_r_tran = y[35:44] # \hat{K}_r (translational)
+            Theta_hat_tran = y[44:62] # \hat{\Theta} (translational)
+            omega_ref = y[62:65] # Reference model rotational dynamics
+            K_hat_x_rot = y[65:74] # \hat{K}_x (rotational)
+            K_hat_r_rot = y[74:83] # \hat{K}_r (rotational)
+            Theta_hat_rot = y[83:101] # \hat{\Theta} (rotational)
+            integral_e_rot = y[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+            e_transient_tran = y[104:110] # Transient error dynamics translational (Two-layer) 
+            K_hat_g_tran = y[110:128] # \hat{K}_g translational (Two-layer) 
+            e_transient_rot = y[128:131] # Transient error dynamics rotational (Two-layer) 
+            K_hat_g_rot = y[131:140] # \hat{K}_g (rotational)(Two-layer)
+            eta_funnel_tran = y[140] # eta used to compute the translational dynamics funnel diameter
+            eta_funnel_rot = y[141] # eta used to compute the rotational dynamics funnel diameter
             
             K_hat_x_tran = np.matrix(K_hat_x_tran.reshape(6,3))
             K_hat_r_tran = np.matrix(K_hat_r_tran.reshape(3,3))
@@ -3057,8 +3238,21 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
             pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
         
             angular_error_dot = angular_position_dot - angular_position_ref_dot
             
@@ -3107,22 +3301,24 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:10] = x_ref_tran_dot
-            dy[10:13] = translational_position_in_I_ref - translational_position_in_I_user
-            dy[13:31] = K_hat_x_tran_dot.reshape(18,1)
-            dy[31:40] = K_hat_r_tran_dot.reshape(9,1)
-            dy[40:58] = Theta_hat_tran_dot.reshape(18,1)
-            dy[58:61] = omega_ref_dot
-            dy[61:70] = K_hat_x_rot_dot.reshape(9,1)
-            dy[70:79] = K_hat_r_rot_dot.reshape(9,1)
-            dy[79:97] = Theta_hat_rot_dot.reshape(18,1)
-            dy[97:100] = angular_velocity - omega_ref
-            dy[100:106] = e_transient_tran_dot
-            dy[106:124] = K_hat_g_tran_dot.reshape(18,1)
-            dy[124:127] = e_transient_rot_dot
-            dy[127:136] = K_hat_g_rot_dot.reshape(9,1)
-            dy[136] = eta_funnel_tran * xi_funnel_tran
-            dy[137] = eta_funnel_rot * xi_funnel_rot
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:14] = x_ref_tran_dot
+            dy[14:17] = translational_position_in_I_ref - translational_position_in_I_user
+            dy[17:35] = K_hat_x_tran_dot.reshape(18,1)
+            dy[35:44] = K_hat_r_tran_dot.reshape(9,1)
+            dy[44:62] = Theta_hat_tran_dot.reshape(18,1)
+            dy[62:65] = omega_ref_dot
+            dy[65:74] = K_hat_x_rot_dot.reshape(9,1)
+            dy[74:83] = K_hat_r_rot_dot.reshape(9,1)
+            dy[83:101] = Theta_hat_rot_dot.reshape(18,1)
+            dy[101:104] = angular_velocity - omega_ref
+            dy[104:110] = e_transient_tran_dot
+            dy[110:128] = K_hat_g_tran_dot.reshape(18,1)
+            dy[128:131] = e_transient_rot_dot
+            dy[131:140] = K_hat_g_rot_dot.reshape(9,1)
+            dy[140] = eta_funnel_tran * xi_funnel_tran
+            dy[141] = eta_funnel_rot * xi_funnel_rot
          
             return np.array(dy)
         
@@ -3136,7 +3332,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             This function defines the system of equations of the MRAC with Baseline CONTROLLER that need to be integrated 
         
             """
-            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot
+            global mu_x, mu_y, mu_z, u1, roll_ref, pitch_ref, roll_ref_dot, pitch_ref_dot, roll_ref_ddot, pitch_ref_ddot, roll_ref_dot_fil, pitch_ref_dot_fil, roll_ref_ddot_fil, pitch_ref_ddot_fil
             global angular_position_ref_dot, angular_position_ref_ddot, Jacobian_matrix_inverse, angular_position_dot
             global angular_error_dot, u2, u3, u4, mu_baseline_tran, mu_adaptive_tran, Moment_baseline, Moment_adaptive
             global mu_PD_baseline_tran, Moment_baseline_PI, omega_ref_dot, omega_cmd, omega_cmd_dot, Jacobian_matrix
@@ -3145,19 +3341,21 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             state_phi_ref_diff = y[0:2] # State of the differentiator for phi_ref (roll_ref)
             state_theta_ref_diff = y[2:4] # State of the differentiator for theta_ref (pitch_ref)
-            x_ref_tran = y[4:10] # Reference model state
-            integral_position_tracking_ref = y[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-            K_hat_x_tran = y[13:31] # \hat{K}_x (translational)
-            K_hat_r_tran = y[31:40] # \hat{K}_r (translational)
-            Theta_hat_tran = y[40:58] # \hat{\Theta} (translational)
-            omega_ref = y[58:61] # Reference model rotational dynamics
-            K_hat_x_rot = y[61:70] # \hat{K}_x (rotational)
-            K_hat_r_rot = y[70:79] # \hat{K}_r (rotational)
-            Theta_hat_rot = y[79:97] # \hat{\Theta} (rotational)
-            integral_e_rot = y[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+            state_phi_ref_diff_fil = y[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+            state_theta_ref_diff_fil = y[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+            x_ref_tran = y[8:14] # Reference model state
+            integral_position_tracking_ref = y[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+            K_hat_x_tran = y[17:35] # \hat{K}_x (translational)
+            K_hat_r_tran = y[35:44] # \hat{K}_r (translational)
+            Theta_hat_tran = y[44:62] # \hat{\Theta} (translational)
+            omega_ref = y[62:65] # Reference model rotational dynamics
+            K_hat_x_rot = y[65:74] # \hat{K}_x (rotational)
+            K_hat_r_rot = y[74:83] # \hat{K}_r (rotational)
+            Theta_hat_rot = y[83:101] # \hat{\Theta} (rotational)
+            integral_e_rot = y[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
             
-            integral_angular_error = y[100:103] # Integral of angular_error = attitude - attitude_ref
-            integral_e_omega_ref_cmd = y[103:106] #Integral of (omega_ref - omega_cmd)
+            integral_angular_error = y[104:107] # Integral of angular_error = attitude - attitude_ref
+            integral_e_omega_ref_cmd = y[107:110] #Integral of (omega_ref - omega_cmd)
             
             K_hat_x_tran = np.matrix(K_hat_x_tran.reshape(6,3))
             K_hat_r_tran = np.matrix(K_hat_r_tran.reshape(3,3))
@@ -3295,8 +3493,22 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             roll_ref_ddot = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff).item()
             pitch_ref_ddot = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff).item()
             
-            angular_position_ref_dot = np.array([roll_ref_dot, pitch_ref_dot, yaw_ref_dot]).reshape(3,1)
-            angular_position_ref_ddot = np.array([roll_ref_ddot, pitch_ref_ddot, yaw_ref_ddot]).reshape(3,1)
+            
+            
+            # Kalman Filter implemetation
+            internal_state_differentiator_phi_ref_diff_fil = A_phi_ref * state_phi_ref_diff_fil + B_phi_ref*roll_ref + K_phi * (roll_ref_dot - np.asarray(C_phi_ref*state_phi_ref_diff_fil).item())
+            internal_state_differentiator_theta_ref_diff_fil = A_theta_ref * state_theta_ref_diff_fil + B_theta_ref*pitch_ref + K_theta * (pitch_ref_dot - np.asarray(C_theta_ref*state_theta_ref_diff_fil).item())
+            
+            roll_ref_dot_fil = np.asarray(C_phi_ref*state_phi_ref_diff_fil).item()
+            pitch_ref_dot_fil = np.asarray(C_theta_ref*state_theta_ref_diff_fil).item()
+            
+            roll_ref_ddot_fil = np.asarray(C_phi_ref*internal_state_differentiator_phi_ref_diff_fil).item()
+            pitch_ref_ddot_fil = np.asarray(C_theta_ref*internal_state_differentiator_theta_ref_diff_fil).item()
+            
+            
+            
+            angular_position_ref_dot = np.array([roll_ref_dot_fil, pitch_ref_dot_fil, yaw_ref_dot]).reshape(3,1)
+            angular_position_ref_ddot = np.array([roll_ref_ddot_fil, pitch_ref_ddot_fil, yaw_ref_ddot]).reshape(3,1)
         
             angular_error_dot = angular_position_dot - angular_position_ref_dot
             
@@ -3353,19 +3565,21 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
             
             dy[0:2] = internal_state_differentiator_phi_ref_diff
             dy[2:4] = internal_state_differentiator_theta_ref_diff
-            dy[4:10] = x_ref_tran_dot
-            dy[10:13] = translational_position_in_I_ref - translational_position_in_I_user
-            dy[13:31] = K_hat_x_tran_dot.reshape(18,1)
-            dy[31:40] = K_hat_r_tran_dot.reshape(9,1)
-            dy[40:58] = Theta_hat_tran_dot.reshape(18,1)
-            dy[58:61] = omega_ref_dot
-            dy[61:70] = K_hat_x_rot_dot.reshape(9,1)
-            dy[70:79] = K_hat_r_rot_dot.reshape(9,1)
-            dy[79:97] = Theta_hat_rot_dot.reshape(18,1)
-            dy[97:100] = angular_velocity - omega_ref
+            dy[4:6] = internal_state_differentiator_phi_ref_diff_fil
+            dy[6:8] = internal_state_differentiator_theta_ref_diff_fil
+            dy[8:14] = x_ref_tran_dot
+            dy[14:17] = translational_position_in_I_ref - translational_position_in_I_user
+            dy[17:35] = K_hat_x_tran_dot.reshape(18,1)
+            dy[35:44] = K_hat_r_tran_dot.reshape(9,1)
+            dy[44:62] = Theta_hat_tran_dot.reshape(18,1)
+            dy[62:65] = omega_ref_dot
+            dy[65:74] = K_hat_x_rot_dot.reshape(9,1)
+            dy[74:83] = K_hat_r_rot_dot.reshape(9,1)
+            dy[83:101] = Theta_hat_rot_dot.reshape(18,1)
+            dy[101:104] = angular_velocity - omega_ref
             
-            dy[100:103] = angular_error
-            dy[103:106] = omega_ref - omega_cmd
+            dy[104:107] = angular_error
+            dy[107:110] = omega_ref - omega_cmd
          
             return np.array(dy)
         
@@ -3772,7 +3986,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                     header_csv = ["Real Time[s]","Simulation time[s]", "translational_position_in_Ix[m]","translational_position_in_Iy[m]","translational_position_in_Iz[m]",
                                          "translational_velocity_in_Ix[m/s]","translational_velocity_in_Iy[m/s]","translational_velocity_in_Iz[m/s]", "roll[rad]","pitch[rad]","yaw[rad]",
                                          "angular_velocity_x[rad/s]","angular_velocity_y[rad/s]","angular_velocity_z[rad/s]", "roll_ref[rad]","pitch_ref[rad]", "yaw_ref[rad]",
-                                         "roll_ref_dot[rad/s]", "pitch_ref_dot[rad/s]", "yaw_ref_dot[rad/s]","roll_ref_ddot[rad/s^2]", "pitch_ref_ddot[rad/s^2]", "yaw_ref_ddot[rad/s^2]",
+                                         "roll_ref_dot[rad/s]", "roll_ref_dot_fil[rad/s]", "pitch_ref_dot[rad/s]", "pitch_ref_dot_fil[rad/s]", "yaw_ref_dot[rad/s]","roll_ref_ddot[rad/s^2]", "roll_ref_ddot_fil[rad/s^2]", "pitch_ref_ddot[rad/s^2]", "pitch_ref_ddot_fil[rad/s^2]", "yaw_ref_ddot[rad/s^2]",
                                          "translational_position_in_I_user_x[m]","translational_position_in_I_user_y[m]","translational_position_in_I_user_z[m]",
                                          "translational_velocity_in_I_user_x[m/s]","translational_velocity_in_I_user_y[m/s]","translational_velocity_in_I_user_z[m/s]",
                                          "translational_acceleration_in_I_user_x[m/s^2]","translational_acceleration_in_I_user_y[m/s^2]","translational_acceleration_in_I_user_z[m/s^2]",
@@ -3798,7 +4012,7 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                                   "angular_velocity_x[rad/s]","angular_velocity_y[rad/s]","angular_velocity_z[rad/s]",
                                   "x_ref_tran1[m]", "x_ref_tran2[m]", "x_ref_tran3[m]", "x_ref_tran4[m]", "x_ref_tran5[m]", "x_ref_tran6[m]",
                                   "roll_ref[rad]","pitch_ref[rad]", "yaw_ref[rad]",
-                                  "roll_ref_dot[rad/s]", "pitch_ref_dot[rad/s]", "yaw_ref_dot[rad/s]","roll_ref_ddot[rad/s^2]", "pitch_ref_ddot[rad/s^2]", "yaw_ref_ddot[rad/s^2]",
+                                  "roll_ref_dot[rad/s]", "roll_ref_dot_fil[rad/s]", "pitch_ref_dot[rad/s]", "pitch_ref_dot_fil[rad/s]", "yaw_ref_dot[rad/s]","roll_ref_ddot[rad/s^2]", "roll_ref_ddot_fil[rad/s^2]", "pitch_ref_ddot[rad/s^2]", "pitch_ref_ddot_fil[rad/s^2]", "yaw_ref_ddot[rad/s^2]",
                                   "omega_ref_x[rad/s]", "omega_ref_y[rad/s]", "omega_ref_z[rad/s]", "translational_position_in_I_user_x[m]","translational_position_in_I_user_y[m]","translational_position_in_I_user_z[m]",
                                   "translational_velocity_in_I_user_x[m/s]","translational_velocity_in_I_user_y[m/s]","translational_velocity_in_I_user_z[m/s]",
                                   "translational_acceleration_in_I_user_x[m/s^2]","translational_acceleration_in_I_user_y[m/s^2]","translational_acceleration_in_I_user_z[m/s^2]",
@@ -3836,9 +4050,12 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ############################### PID ###############################
                 state_phi_ref_diff = yout[0:2]
                 state_theta_ref_diff = yout[2:4]
-                integral_position_tracking = yout[4:7]
-                integral_angular_error = yout[7:10]
+                state_phi_ref_diff_fil = yout[4:6]
+                state_theta_ref_diff_fil = yout[6:8]
+                integral_position_tracking = yout[8:11]
+                integral_angular_error = yout[11:14]
                 ###################################################################
+        
                 
             elif controller_type == 'MRACwithBASELINE':
                 # Integrating the ODEs through RK4 for MRAC with Baseline controller
@@ -3849,16 +4066,18 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ###################### MRAC WITH BASELINE #########################
                 state_phi_ref_diff = yout[0:2] # State of the differentiator for phi_ref (roll_ref)
                 state_theta_ref_diff = yout[2:4] # State of the differentiator for theta_ref (pitch_ref)
-                x_ref_tran = yout[4:10] # Reference model state
-                integral_position_tracking_ref = yout[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-                K_hat_x_tran = yout[13:31] # \hat{K}_x (translational)
-                K_hat_r_tran = yout[31:40] # \hat{K}_r (translational)
-                Theta_hat_tran = yout[40:58] # \hat{\Theta} (translational)
-                omega_ref = yout[58:61] # Reference model rotational dynamics
-                K_hat_x_rot = yout[61:70] # \hat{K}_x (rotational)
-                K_hat_r_rot = yout[70:79] # \hat{K}_r (rotational)
-                Theta_hat_rot = yout[79:97] # \hat{\Theta} (rotational)
-                integral_e_rot = yout[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+                state_phi_ref_diff_fil = yout[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+                state_theta_ref_diff_fil = yout[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+                x_ref_tran = yout[8:14] # Reference model state
+                integral_position_tracking_ref = yout[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+                K_hat_x_tran = yout[17:35] # \hat{K}_x (translational)
+                K_hat_r_tran = yout[35:44] # \hat{K}_r (translational)
+                Theta_hat_tran = yout[44:62] # \hat{\Theta} (translational)
+                omega_ref = yout[62:65] # Reference model rotational dynamics
+                K_hat_x_rot = yout[65:74] # \hat{K}_x (rotational)
+                K_hat_r_rot = yout[74:83] # \hat{K}_r (rotational)
+                Theta_hat_rot = yout[83:101] # \hat{\Theta} (rotational)
+                integral_e_rot = yout[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
                 ###################################################################
                 
             elif controller_type == 'TwoLayerMRACwithBASELINE':
@@ -3870,20 +4089,22 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ################### 2-LAYER MRAC WITH BASELINE ####################
                 state_phi_ref_diff = yout[0:2] # State of the differentiator for phi_ref (roll_ref)
                 state_theta_ref_diff = yout[2:4] # State of the differentiator for theta_ref (pitch_ref)
-                x_ref_tran = yout[4:10] # Reference model state
-                integral_position_tracking_ref = yout[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-                K_hat_x_tran = yout[13:31] # \hat{K}_x (translational)
-                K_hat_r_tran = yout[31:40] # \hat{K}_r (translational)
-                Theta_hat_tran = yout[40:58] # \hat{\Theta} (translational)
-                omega_ref = yout[58:61] # Reference model rotational dynamics
-                K_hat_x_rot = yout[61:70] # \hat{K}_x (rotational)
-                K_hat_r_rot = yout[70:79] # \hat{K}_r (rotational)
-                Theta_hat_rot = yout[79:97] # \hat{\Theta} (rotational)
-                integral_e_rot = yout[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-                e_transient_tran = yout[100:106] # Transient error dynamics translational (Two-layer) 
-                K_hat_g_tran = yout[106:124] # \hat{K}_g translational (Two-layer) 
-                e_transient_rot = yout[124:127] # Transient error dynamics rotational (Two-layer) 
-                K_hat_g_rot = yout[127:136] # \hat{K}_g (rotational)(Two-layer)
+                state_phi_ref_diff_fil = yout[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+                state_theta_ref_diff_fil = yout[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+                x_ref_tran = yout[8:14] # Reference model state
+                integral_position_tracking_ref = yout[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+                K_hat_x_tran = yout[17:35] # \hat{K}_x (translational)
+                K_hat_r_tran = yout[35:44] # \hat{K}_r (translational)
+                Theta_hat_tran = yout[44:62] # \hat{\Theta} (translational)
+                omega_ref = yout[62:65] # Reference model rotational dynamics
+                K_hat_x_rot = yout[65:74] # \hat{K}_x (rotational)
+                K_hat_r_rot = yout[74:83] # \hat{K}_r (rotational)
+                Theta_hat_rot = yout[83:101] # \hat{\Theta} (rotational)
+                integral_e_rot = yout[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+                e_transient_tran = yout[104:110] # Transient error dynamics translational (Two-layer) 
+                K_hat_g_tran = yout[110:128] # \hat{K}_g translational (Two-layer) 
+                e_transient_rot = yout[128:131] # Transient error dynamics rotational (Two-layer) 
+                K_hat_g_rot = yout[131:140] # \hat{K}_g (rotational)(Two-layer)
                 ###################################################################
     
             elif controller_type == 'RobustMRACwithBASELINE':
@@ -3895,16 +4116,18 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ################### ROBUST MRAC WITH BASELINE ######################
                 state_phi_ref_diff = yout[0:2] # State of the differentiator for phi_ref (roll_ref)
                 state_theta_ref_diff = yout[2:4] # State of the differentiator for theta_ref (pitch_ref)
-                x_ref_tran = yout[4:10] # Reference model state
-                integral_position_tracking_ref = yout[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-                K_hat_x_tran = yout[13:31] # \hat{K}_x (translational)
-                K_hat_r_tran = yout[31:40] # \hat{K}_r (translational)
-                Theta_hat_tran = yout[40:58] # \hat{\Theta} (translational)
-                omega_ref = yout[58:61] # Reference model rotational dynamics
-                K_hat_x_rot = yout[61:70] # \hat{K}_x (rotational)
-                K_hat_r_rot = yout[70:79] # \hat{K}_r (rotational)
-                Theta_hat_rot = yout[79:97] # \hat{\Theta} (rotational)
-                integral_e_rot = yout[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+                state_phi_ref_diff_fil = yout[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+                state_theta_ref_diff_fil = yout[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+                x_ref_tran = yout[8:14] # Reference model state
+                integral_position_tracking_ref = yout[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+                K_hat_x_tran = yout[17:35] # \hat{K}_x (translational)
+                K_hat_r_tran = yout[35:44] # \hat{K}_r (translational)
+                Theta_hat_tran = yout[44:62] # \hat{\Theta} (translational)
+                omega_ref = yout[62:65] # Reference model rotational dynamics
+                K_hat_x_rot = yout[65:74] # \hat{K}_x (rotational)
+                K_hat_r_rot = yout[74:83] # \hat{K}_r (rotational)
+                Theta_hat_rot = yout[83:101] # \hat{\Theta} (rotational)
+                integral_e_rot = yout[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
                 ###################################################################
     
             elif controller_type == 'RobustTwoLayerMRACwithBASELINE':
@@ -3916,20 +4139,22 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ################ ROBUST 2-LAYER MRAC WITH BASELINE ################
                 state_phi_ref_diff = yout[0:2] # State of the differentiator for phi_ref (roll_ref)
                 state_theta_ref_diff = yout[2:4] # State of the differentiator for theta_ref (pitch_ref)
-                x_ref_tran = yout[4:10] # Reference model state
-                integral_position_tracking_ref = yout[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-                K_hat_x_tran = yout[13:31] # \hat{K}_x (translational)
-                K_hat_r_tran = yout[31:40] # \hat{K}_r (translational)
-                Theta_hat_tran = yout[40:58] # \hat{\Theta} (translational)
-                omega_ref = yout[58:61] # Reference model rotational dynamics
-                K_hat_x_rot = yout[61:70] # \hat{K}_x (rotational)
-                K_hat_r_rot = yout[70:79] # \hat{K}_r (rotational)
-                Theta_hat_rot = yout[79:97] # \hat{\Theta} (rotational)
-                integral_e_rot = yout[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-                e_transient_tran = yout[100:106] # Transient error dynamics translational (Two-layer) 
-                K_hat_g_tran = yout[106:124] # \hat{K}_g translational (Two-layer) 
-                e_transient_rot = yout[124:127] # Transient error dynamics rotational (Two-layer) 
-                K_hat_g_rot = yout[127:136] # \hat{K}_g (rotational)(Two-layer)
+                state_phi_ref_diff_fil = yout[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+                state_theta_ref_diff_fil = yout[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+                x_ref_tran = yout[8:14] # Reference model state
+                integral_position_tracking_ref = yout[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+                K_hat_x_tran = yout[17:35] # \hat{K}_x (translational)
+                K_hat_r_tran = yout[35:44] # \hat{K}_r (translational)
+                Theta_hat_tran = yout[44:62] # \hat{\Theta} (translational)
+                omega_ref = yout[62:65] # Reference model rotational dynamics
+                K_hat_x_rot = yout[65:74] # \hat{K}_x (rotational)
+                K_hat_r_rot = yout[74:83] # \hat{K}_r (rotational)
+                Theta_hat_rot = yout[83:101] # \hat{\Theta} (rotational)
+                integral_e_rot = yout[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+                e_transient_tran = yout[104:110] # Transient error dynamics translational (Two-layer) 
+                K_hat_g_tran = yout[110:128] # \hat{K}_g translational (Two-layer) 
+                e_transient_rot = yout[128:131] # Transient error dynamics rotational (Two-layer) 
+                K_hat_g_rot = yout[131:140] # \hat{K}_g (rotational)(Two-layer)
                 ###################################################################
                 
                 
@@ -3945,18 +4170,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ###################### MRAC WITH BASELINE #########################
                 state_phi_ref_diff = yout[0:2] # State of the differentiator for phi_ref (roll_ref)
                 state_theta_ref_diff = yout[2:4] # State of the differentiator for theta_ref (pitch_ref)
-                x_ref_tran = yout[4:10] # Reference model state
-                integral_position_tracking_ref = yout[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-                K_hat_x_tran = yout[13:31] # \hat{K}_x (translational)
-                K_hat_r_tran = yout[31:40] # \hat{K}_r (translational)
-                Theta_hat_tran = yout[40:58] # \hat{\Theta} (translational)
-                omega_ref = yout[58:61] # Reference model rotational dynamics
-                K_hat_x_rot = yout[61:70] # \hat{K}_x (rotational)
-                K_hat_r_rot = yout[70:79] # \hat{K}_r (rotational)
-                Theta_hat_rot = yout[79:97] # \hat{\Theta} (rotational)
-                integral_e_rot = yout[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-                integral_eQe_tran = yout[100] # Integral of e_tran.T * Q_tran * e_tran
-                integral_eQe_rot = yout[101] # Integral of e_rot.T * Q_rot * e_rot
+                state_phi_ref_diff_fil = yout[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+                state_theta_ref_diff_fil = yout[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+                x_ref_tran = yout[8:14] # Reference model state
+                integral_position_tracking_ref = yout[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+                K_hat_x_tran = yout[17:35] # \hat{K}_x (translational)
+                K_hat_r_tran = yout[35:44] # \hat{K}_r (translational)
+                Theta_hat_tran = yout[44:62] # \hat{\Theta} (translational)
+                omega_ref = yout[62:65] # Reference model rotational dynamics
+                K_hat_x_rot = yout[65:74] # \hat{K}_x (rotational)
+                K_hat_r_rot = yout[74:83] # \hat{K}_r (rotational)
+                Theta_hat_rot = yout[83:101] # \hat{\Theta} (rotational)
+                integral_e_rot = yout[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+                integral_eQe_tran = yout[104] # Integral of e_tran.T * Q_tran * e_tran
+                integral_eQe_rot = yout[105] # Integral of e_rot.T * Q_rot * e_rot
                 ###################################################################
                 
                 print('e_tran', e_tran)
@@ -4043,24 +4270,26 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ################### 2-LAYER MRAC WITH BASELINE ####################
                 state_phi_ref_diff = yout[0:2] # State of the differentiator for phi_ref (roll_ref)
                 state_theta_ref_diff = yout[2:4] # State of the differentiator for theta_ref (pitch_ref)
-                x_ref_tran = yout[4:10] # Reference model state
-                integral_position_tracking_ref = yout[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-                K_hat_x_tran = yout[13:31] # \hat{K}_x (translational)
-                K_hat_r_tran = yout[31:40] # \hat{K}_r (translational)
-                Theta_hat_tran = yout[40:58] # \hat{\Theta} (translational)
-                omega_ref = yout[58:61] # Reference model rotational dynamics
-                K_hat_x_rot = yout[61:70] # \hat{K}_x (rotational)
-                K_hat_r_rot = yout[70:79] # \hat{K}_r (rotational)
-                Theta_hat_rot = yout[79:97] # \hat{\Theta} (rotational)
-                integral_e_rot = yout[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-                e_transient_tran = yout[100:106] # Transient error dynamics translational (Two-layer) 
-                K_hat_g_tran = yout[106:124] # \hat{K}_g translational (Two-layer) 
-                e_transient_rot = yout[124:127] # Transient error dynamics rotational (Two-layer) 
-                K_hat_g_rot = yout[127:136] # \hat{K}_g (rotational)(Two-layer)
-                integral_epsQeps_tran = yout[136] # Integral of epsilon_tran.T * Q_tran_2Layer * epsilon_tran
-                integral_epsQeps_rot = yout[137] # Integral of epsilon_rot.T * Q_rot_2Layer * epsilon_rot
-                integral_etQet_tran = yout[138] # Integral of e_transient_tran.T * Q_tran_2Layer * e_transient_tran
-                integral_etQet_rot = yout[139] # Integral of e_transient_rot.T * Q_rot_2Layer * e_transient_rot
+                state_phi_ref_diff_fil = yout[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+                state_theta_ref_diff_fil = yout[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+                x_ref_tran = yout[8:14] # Reference model state
+                integral_position_tracking_ref = yout[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+                K_hat_x_tran = yout[17:35] # \hat{K}_x (translational)
+                K_hat_r_tran = yout[35:44] # \hat{K}_r (translational)
+                Theta_hat_tran = yout[44:62] # \hat{\Theta} (translational)
+                omega_ref = yout[62:65] # Reference model rotational dynamics
+                K_hat_x_rot = yout[65:74] # \hat{K}_x (rotational)
+                K_hat_r_rot = yout[74:83] # \hat{K}_r (rotational)
+                Theta_hat_rot = yout[83:101] # \hat{\Theta} (rotational)
+                integral_e_rot = yout[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+                e_transient_tran = yout[104:110] # Transient error dynamics translational (Two-layer) 
+                K_hat_g_tran = yout[110:128] # \hat{K}_g translational (Two-layer) 
+                e_transient_rot = yout[128:131] # Transient error dynamics rotational (Two-layer) 
+                K_hat_g_rot = yout[131:140] # \hat{K}_g (rotational)(Two-layer)
+                integral_epsQeps_tran = yout[140] # Integral of epsilon_tran.T * Q_tran_2Layer * epsilon_tran
+                integral_epsQeps_rot = yout[141] # Integral of epsilon_rot.T * Q_rot_2Layer * epsilon_rot
+                integral_etQet_tran = yout[142] # Integral of e_transient_tran.T * Q_tran_2Layer * e_transient_tran
+                integral_etQet_rot = yout[143] # Integral of e_transient_rot.T * Q_rot_2Layer * e_transient_rot
                 ###################################################################
                 
                 print('epsilon_tran', epsilon_tran)
@@ -4185,18 +4414,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ################### ROBUST MRAC WITH BASELINE ######################
                 state_phi_ref_diff = yout[0:2] # State of the differentiator for phi_ref (roll_ref)
                 state_theta_ref_diff = yout[2:4] # State of the differentiator for theta_ref (pitch_ref)
-                x_ref_tran = yout[4:10] # Reference model state
-                integral_position_tracking_ref = yout[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-                K_hat_x_tran = yout[13:31] # \hat{K}_x (translational)
-                K_hat_r_tran = yout[31:40] # \hat{K}_r (translational)
-                Theta_hat_tran = yout[40:58] # \hat{\Theta} (translational)
-                omega_ref = yout[58:61] # Reference model rotational dynamics
-                K_hat_x_rot = yout[61:70] # \hat{K}_x (rotational)
-                K_hat_r_rot = yout[70:79] # \hat{K}_r (rotational)
-                Theta_hat_rot = yout[79:97] # \hat{\Theta} (rotational)
-                integral_e_rot = yout[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-                integral_eQe_tran = yout[100] # Integral of e_tran.T * Q_tran * e_tran
-                integral_eQe_rot = yout[101] # Integral of e_rot.T * Q_rot * e_rot
+                state_phi_ref_diff_fil = yout[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+                state_theta_ref_diff_fil = yout[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+                x_ref_tran = yout[8:14] # Reference model state
+                integral_position_tracking_ref = yout[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+                K_hat_x_tran = yout[17:35] # \hat{K}_x (translational)
+                K_hat_r_tran = yout[35:44] # \hat{K}_r (translational)
+                Theta_hat_tran = yout[44:62] # \hat{\Theta} (translational)
+                omega_ref = yout[62:65] # Reference model rotational dynamics
+                K_hat_x_rot = yout[65:74] # \hat{K}_x (rotational)
+                K_hat_r_rot = yout[74:83] # \hat{K}_r (rotational)
+                Theta_hat_rot = yout[83:101] # \hat{\Theta} (rotational)
+                integral_e_rot = yout[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+                integral_eQe_tran = yout[104] # Integral of e_tran.T * Q_tran * e_tran
+                integral_eQe_rot = yout[105] # Integral of e_rot.T * Q_rot * e_rot
                 ###################################################################
                 
                 print('e_tran', e_tran)
@@ -4282,24 +4513,26 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ################ ROBUST 2-LAYER MRAC WITH BASELINE ################
                 state_phi_ref_diff = yout[0:2] # State of the differentiator for phi_ref (roll_ref)
                 state_theta_ref_diff = yout[2:4] # State of the differentiator for theta_ref (pitch_ref)
-                x_ref_tran = yout[4:10] # Reference model state
-                integral_position_tracking_ref = yout[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-                K_hat_x_tran = yout[13:31] # \hat{K}_x (translational)
-                K_hat_r_tran = yout[31:40] # \hat{K}_r (translational)
-                Theta_hat_tran = yout[40:58] # \hat{\Theta} (translational)
-                omega_ref = yout[58:61] # Reference model rotational dynamics
-                K_hat_x_rot = yout[61:70] # \hat{K}_x (rotational)
-                K_hat_r_rot = yout[70:79] # \hat{K}_r (rotational)
-                Theta_hat_rot = yout[79:97] # \hat{\Theta} (rotational)
-                integral_e_rot = yout[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-                e_transient_tran = yout[100:106] # Transient error dynamics translational (Two-layer) 
-                K_hat_g_tran = yout[106:124] # \hat{K}_g translational (Two-layer) 
-                e_transient_rot = yout[124:127] # Transient error dynamics rotational (Two-layer) 
-                K_hat_g_rot = yout[127:136] # \hat{K}_g (rotational)(Two-layer)
-                integral_epsQeps_tran = yout[136] # Integral of epsilon_tran.T * Q_tran_2Layer * epsilon_tran
-                integral_epsQeps_rot = yout[137] # Integral of epsilon_rot.T * Q_rot_2Layer * epsilon_rot
-                integral_etQet_tran = yout[138] # Integral of e_transient_tran.T * Q_tran_2Layer * e_transient_tran
-                integral_etQet_rot = yout[139] # Integral of e_transient_rot.T * Q_rot_2Layer * e_transient_rot
+                state_phi_ref_diff_fil = yout[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+                state_theta_ref_diff_fil = yout[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+                x_ref_tran = yout[8:14] # Reference model state
+                integral_position_tracking_ref = yout[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+                K_hat_x_tran = yout[17:35] # \hat{K}_x (translational)
+                K_hat_r_tran = yout[35:44] # \hat{K}_r (translational)
+                Theta_hat_tran = yout[44:62] # \hat{\Theta} (translational)
+                omega_ref = yout[62:65] # Reference model rotational dynamics
+                K_hat_x_rot = yout[65:74] # \hat{K}_x (rotational)
+                K_hat_r_rot = yout[74:83] # \hat{K}_r (rotational)
+                Theta_hat_rot = yout[83:101] # \hat{\Theta} (rotational)
+                integral_e_rot = yout[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+                e_transient_tran = yout[104:110] # Transient error dynamics translational (Two-layer) 
+                K_hat_g_tran = yout[110:128] # \hat{K}_g translational (Two-layer) 
+                e_transient_rot = yout[128:131] # Transient error dynamics rotational (Two-layer) 
+                K_hat_g_rot = yout[131:140] # \hat{K}_g (rotational)(Two-layer)
+                integral_epsQeps_tran = yout[140] # Integral of epsilon_tran.T * Q_tran_2Layer * epsilon_tran
+                integral_epsQeps_rot = yout[141] # Integral of epsilon_rot.T * Q_rot_2Layer * epsilon_rot
+                integral_etQet_tran = yout[142] # Integral of e_transient_tran.T * Q_tran_2Layer * e_transient_tran
+                integral_etQet_rot = yout[143] # Integral of e_transient_rot.T * Q_rot_2Layer * e_transient_rot
                 ###################################################################
                 
                 print('epsilon_tran', epsilon_tran)
@@ -4421,18 +4654,20 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ################### FUNNEL MRAC WITH BASELINE #####################
                 state_phi_ref_diff = yout[0:2] # State of the differentiator for phi_ref (roll_ref)
                 state_theta_ref_diff = yout[2:4] # State of the differentiator for theta_ref (pitch_ref)
-                x_ref_tran = yout[4:10] # Reference model state
-                integral_position_tracking_ref = yout[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-                K_hat_x_tran = yout[13:31] # \hat{K}_x (translational)
-                K_hat_r_tran = yout[31:40] # \hat{K}_r (translational)
-                Theta_hat_tran = yout[40:58] # \hat{\Theta} (translational)
-                omega_ref = yout[58:61] # Reference model rotational dynamics
-                K_hat_x_rot = yout[61:70] # \hat{K}_x (rotational)
-                K_hat_r_rot = yout[70:79] # \hat{K}_r (rotational)
-                Theta_hat_rot = yout[79:97] # \hat{\Theta} (rotational)
-                integral_e_rot = yout[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-                eta_funnel_tran = yout[100] # eta used to compute the translational dynamics funnel diameter
-                eta_funnel_rot = yout[101] # eta used to compute the rotational dynamics funnel diameter
+                state_phi_ref_diff_fil = yout[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+                state_theta_ref_diff_fil = yout[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+                x_ref_tran = yout[8:14] # Reference model state
+                integral_position_tracking_ref = yout[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+                K_hat_x_tran = yout[17:35] # \hat{K}_x (translational)
+                K_hat_r_tran = yout[35:44] # \hat{K}_r (translational)
+                Theta_hat_tran = yout[44:62] # \hat{\Theta} (translational)
+                omega_ref = yout[62:65] # Reference model rotational dynamics
+                K_hat_x_rot = yout[65:74] # \hat{K}_x (rotational)
+                K_hat_r_rot = yout[74:83] # \hat{K}_r (rotational)
+                Theta_hat_rot = yout[83:101] # \hat{\Theta} (rotational)
+                integral_e_rot = yout[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+                eta_funnel_tran = yout[104] # eta used to compute the translational dynamics funnel diameter
+                eta_funnel_rot = yout[105] # eta used to compute the rotational dynamics funnel diameter
                 ###################################################################
                 
             elif controller_type == 'FunnelTwoLayerMRACwithBASELINE':
@@ -4444,22 +4679,24 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ################### 2-LAYER MRAC WITH BASELINE ####################
                 state_phi_ref_diff = yout[0:2] # State of the differentiator for phi_ref (roll_ref)
                 state_theta_ref_diff = yout[2:4] # State of the differentiator for theta_ref (pitch_ref)
-                x_ref_tran = yout[4:10] # Reference model state
-                integral_position_tracking_ref = yout[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-                K_hat_x_tran = yout[13:31] # \hat{K}_x (translational)
-                K_hat_r_tran = yout[31:40] # \hat{K}_r (translational)
-                Theta_hat_tran = yout[40:58] # \hat{\Theta} (translational)
-                omega_ref = yout[58:61] # Reference model rotational dynamics
-                K_hat_x_rot = yout[61:70] # \hat{K}_x (rotational)
-                K_hat_r_rot = yout[70:79] # \hat{K}_r (rotational)
-                Theta_hat_rot = yout[79:97] # \hat{\Theta} (rotational)
-                integral_e_rot = yout[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
-                e_transient_tran = yout[100:106] # Transient error dynamics translational (Two-layer) 
-                K_hat_g_tran = yout[106:124] # \hat{K}_g translational (Two-layer) 
-                e_transient_rot = yout[124:127] # Transient error dynamics rotational (Two-layer) 
-                K_hat_g_rot = yout[127:136] # \hat{K}_g (rotational)(Two-layer)
-                eta_funnel_tran = yout[136] # eta used to compute the translational dynamics funnel diameter
-                eta_funnel_rot = yout[137] # eta used to compute the rotational dynamics funnel diameter
+                state_phi_ref_diff_fil = yout[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+                state_theta_ref_diff_fil = yout[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+                x_ref_tran = yout[8:14] # Reference model state
+                integral_position_tracking_ref = yout[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+                K_hat_x_tran = yout[17:35] # \hat{K}_x (translational)
+                K_hat_r_tran = yout[35:44] # \hat{K}_r (translational)
+                Theta_hat_tran = yout[44:62] # \hat{\Theta} (translational)
+                omega_ref = yout[62:65] # Reference model rotational dynamics
+                K_hat_x_rot = yout[65:74] # \hat{K}_x (rotational)
+                K_hat_r_rot = yout[74:83] # \hat{K}_r (rotational)
+                Theta_hat_rot = yout[83:101] # \hat{\Theta} (rotational)
+                integral_e_rot = yout[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+                e_transient_tran = yout[104:110] # Transient error dynamics translational (Two-layer) 
+                K_hat_g_tran = yout[110:128] # \hat{K}_g translational (Two-layer) 
+                e_transient_rot = yout[128:131] # Transient error dynamics rotational (Two-layer) 
+                K_hat_g_rot = yout[131:140] # \hat{K}_g (rotational)(Two-layer)
+                eta_funnel_tran = yout[140] # eta used to compute the translational dynamics funnel diameter
+                eta_funnel_rot = yout[141] # eta used to compute the rotational dynamics funnel diameter
                 ###################################################################
                 
             elif controller_type == 'MRACwithBASELINE_SafetyMechanism':
@@ -4471,19 +4708,21 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 ###################### MRAC WITH BASELINE #########################
                 state_phi_ref_diff = yout[0:2] # State of the differentiator for phi_ref (roll_ref)
                 state_theta_ref_diff = yout[2:4] # State of the differentiator for theta_ref (pitch_ref)
-                x_ref_tran = yout[4:10] # Reference model state
-                integral_position_tracking_ref = yout[10:13] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
-                K_hat_x_tran = yout[13:31] # \hat{K}_x (translational)
-                K_hat_r_tran = yout[31:40] # \hat{K}_r (translational)
-                Theta_hat_tran = yout[40:58] # \hat{\Theta} (translational)
-                omega_ref = yout[58:61] # Reference model rotational dynamics
-                K_hat_x_rot = yout[61:70] # \hat{K}_x (rotational)
-                K_hat_r_rot = yout[70:79] # \hat{K}_r (rotational)
-                Theta_hat_rot = yout[79:97] # \hat{\Theta} (rotational)
-                integral_e_rot = yout[97:100] # Integral of 'e_rot' = (angular_velocity - omega_ref)
+                state_phi_ref_diff_fil = yout[4:6] # State of the KF differentiator for phi_ref (roll_ref)
+                state_theta_ref_diff_fil = yout[6:8] # State of the KF differentiator for theta_ref (pitch_ref)
+                x_ref_tran = yout[8:14] # Reference model state
+                integral_position_tracking_ref = yout[14:17] # Integral of ('translational_position_in_I_ref' - 'translational_position_in_I_user')
+                K_hat_x_tran = yout[17:35] # \hat{K}_x (translational)
+                K_hat_r_tran = yout[35:44] # \hat{K}_r (translational)
+                Theta_hat_tran = yout[44:62] # \hat{\Theta} (translational)
+                omega_ref = yout[62:65] # Reference model rotational dynamics
+                K_hat_x_rot = yout[65:74] # \hat{K}_x (rotational)
+                K_hat_r_rot = yout[74:83] # \hat{K}_r (rotational)
+                Theta_hat_rot = yout[83:101] # \hat{\Theta} (rotational)
+                integral_e_rot = yout[101:104] # Integral of 'e_rot' = (angular_velocity - omega_ref)
                 
-                integral_angular_error = yout[100:103] # Integral of angular_error = attitude - attitude_ref
-                integral_e_omega_ref_cmd = yout[103:106] #Integral of e_omega_ref_cmd = omega_ref - omega_cmd
+                integral_angular_error = yout[104:107] # Integral of angular_error = attitude - attitude_ref
+                integral_e_omega_ref_cmd = yout[107:110] #Integral of e_omega_ref_cmd = omega_ref - omega_cmd
                 
                 ###################################################################
             
@@ -4589,22 +4828,26 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 DATA_vector[15] = pitch_ref
                 DATA_vector[16] = yaw_ref
                 DATA_vector[17] = roll_ref_dot
-                DATA_vector[18] = pitch_ref_dot
-                DATA_vector[19] = yaw_ref_dot
-                DATA_vector[20] = roll_ref_ddot
-                DATA_vector[21] = pitch_ref_ddot
-                DATA_vector[22] = yaw_ref_ddot
-                DATA_vector[23:26] = translational_position_in_I_user
-                DATA_vector[26:29] = translational_velocity_in_I_user
-                DATA_vector[29:32] = translational_acceleration_in_I_user
-                DATA_vector[32] = mu_x
-                DATA_vector[33] = mu_y
-                DATA_vector[34] = mu_z
-                DATA_vector[35] = u1
-                DATA_vector[36] = u2
-                DATA_vector[37] = u3
-                DATA_vector[38] = u4
-                DATA_vector[39:47] = T.reshape(8,1)
+                DATA_vector[18] = roll_ref_dot_fil
+                DATA_vector[19] = pitch_ref_dot
+                DATA_vector[20] = pitch_ref_dot_fil
+                DATA_vector[21] = yaw_ref_dot
+                DATA_vector[22] = roll_ref_ddot
+                DATA_vector[23] = roll_ref_ddot_fil
+                DATA_vector[24] = pitch_ref_ddot
+                DATA_vector[25] = pitch_ref_ddot_fil 
+                DATA_vector[26] = yaw_ref_ddot
+                DATA_vector[27:30] = translational_position_in_I_user
+                DATA_vector[30:33] = translational_velocity_in_I_user
+                DATA_vector[33:36] = translational_acceleration_in_I_user
+                DATA_vector[36] = mu_x
+                DATA_vector[37] = mu_y
+                DATA_vector[38] = mu_z
+                DATA_vector[39] = u1
+                DATA_vector[40] = u2
+                DATA_vector[41] = u3
+                DATA_vector[42] = u4
+                DATA_vector[43:51] = T.reshape(8,1)
                 
                 DATA = np.append(DATA,np.resize(DATA_vector,(size_DATA,1)), axis=1)
                 ###################################################################
@@ -4626,29 +4869,33 @@ def WrapperMain_function(target_folder, controller_type, wrapper_control_paramet
                 DATA_vector[21] = pitch_ref
                 DATA_vector[22] = yaw_ref
                 DATA_vector[23] = roll_ref_dot
-                DATA_vector[24] = pitch_ref_dot
-                DATA_vector[25] = yaw_ref_dot
-                DATA_vector[26] = roll_ref_ddot
-                DATA_vector[27] = pitch_ref_ddot
-                DATA_vector[28] = yaw_ref_ddot
-                DATA_vector[29:32] = omega_ref
-                DATA_vector[32:35] = translational_position_in_I_user
-                DATA_vector[35:38] = translational_velocity_in_I_user
-                DATA_vector[38:41] = translational_acceleration_in_I_user
-                DATA_vector[41] = mu_x
-                DATA_vector[42] = mu_y
-                DATA_vector[43] = mu_z
-                DATA_vector[44] = u1
-                DATA_vector[45] = u2
-                DATA_vector[46] = u3
-                DATA_vector[47] = u4
-                DATA_vector[48:56] = T.reshape(8,1)
-                DATA_vector[56:59] = mu_baseline_tran
-                DATA_vector[59:62] = mu_adaptive_tran
-                DATA_vector[62:65] = mu_PD_baseline_tran
-                DATA_vector[65:68] = Moment_baseline
-                DATA_vector[68:71] = Moment_adaptive
-                DATA_vector[71:74] = Moment_baseline_PI
+                DATA_vector[24] = roll_ref_dot_fil
+                DATA_vector[25] = pitch_ref_dot
+                DATA_vector[26] = pitch_ref_dot_fil
+                DATA_vector[27] = yaw_ref_dot
+                DATA_vector[28] = roll_ref_ddot
+                DATA_vector[29] = roll_ref_ddot_fil
+                DATA_vector[30] = pitch_ref_ddot
+                DATA_vector[31] = pitch_ref_ddot_fil 
+                DATA_vector[32] = yaw_ref_ddot
+                DATA_vector[33:36] = omega_ref
+                DATA_vector[36:39] = translational_position_in_I_user
+                DATA_vector[39:42] = translational_velocity_in_I_user
+                DATA_vector[42:45] = translational_acceleration_in_I_user
+                DATA_vector[45] = mu_x
+                DATA_vector[46] = mu_y
+                DATA_vector[47] = mu_z
+                DATA_vector[48] = u1
+                DATA_vector[49] = u2
+                DATA_vector[50] = u3
+                DATA_vector[51] = u4
+                DATA_vector[52:60] = T.reshape(8,1)
+                DATA_vector[60:63] = mu_baseline_tran
+                DATA_vector[63:66] = mu_adaptive_tran
+                DATA_vector[66:69] = mu_PD_baseline_tran
+                DATA_vector[69:72] = Moment_baseline
+                DATA_vector[72:75] = Moment_adaptive
+                DATA_vector[75:78] = Moment_baseline_PI
                 
                 # DATA_vector[74:77] = omega_ref_dot
                 # DATA_vector[77:80] = omega_cmd_dot

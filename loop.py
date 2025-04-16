@@ -20,8 +20,8 @@ time_max = 11.24
 
 
 # If wrapper needs to be run the Wrapper_execution should be True else False
-# Wrapper_execution = True
-Wrapper_execution = False
+Wrapper_execution = True
+# Wrapper_execution = False
 # If you want to see the visualization then the flag should be True 
 visualization_flag = True
 # visualization_flag = False
@@ -39,7 +39,7 @@ visualization_flag = True
 
 # controller_type = 'RobustMRACwithBASELINE'
 
-controller_type = 'RobustTwoLayerMRACwithBASELINE'
+# controller_type = 'RobustTwoLayerMRACwithBASELINE'
 
 # controller_type = 'HybridMRACwithBASELINE'
 
@@ -53,7 +53,7 @@ controller_type = 'RobustTwoLayerMRACwithBASELINE'
 
 # controller_type = 'FunnelTwoLayerMRACwithBASELINE'
 
-# controller_type = 'MRACwithBASELINE_SafetyMechanism'
+controller_type = 'MRACwithBASELINE_SafetyMechanism'
 
 # ----------------------------------------------------------------
 #                     %%%%%%%%%%%%%%%%%%%%%%

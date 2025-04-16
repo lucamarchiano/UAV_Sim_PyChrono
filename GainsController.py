@@ -15,9 +15,10 @@ class Gains:
     def PID():
         
         # Number of states to be integrated by RK4
-        number_of_states = 10
+        number_of_states = 14
         # Length of the array vector that will be exported 
-        size_DATA = 47 
+        # size_DATA = 47
+        size_DATA = 51 # +4 to output KF ref. roll, ref. pitch angles derivatives 
         # size_DATA = 70 # OLD data format
         
         # **Translational** PID parameters 
@@ -59,9 +60,10 @@ class Gains:
     def MRACwithBASELINE(mass_total_estimated,air_density_estimated,surface_area_estimated,drag_coefficient_matrix_estimated):
         
         # Number of states to be integrated by RK4
-        number_of_states = 100
+        number_of_states = 104
         # Length of the array vector that will be exported 
-        size_DATA = 74 
+        # size_DATA = 74
+        size_DATA = 78 # +4 to output KF ref. roll, ref. pitch angles derivatives
         # size_DATA = 94 # OLD data format
         
         # ----------------------------------------------------------------
@@ -158,9 +160,10 @@ class Gains:
     def TwoLayerMRACwithBASELINE(mass_total_estimated,air_density_estimated,surface_area_estimated,drag_coefficient_matrix_estimated):
         
         # Number of states to be integrated by RK4
-        number_of_states = 136
+        number_of_states = 140
         # Length of the array vector that will be exported 
-        size_DATA = 74
+        # size_DATA = 74
+        size_DATA = 78 # +4 to output KF ref. roll, ref. pitch angles derivatives
         # size_DATA = 94 # OLD data format
         
         # ----------------------------------------------------------------
@@ -279,9 +282,10 @@ class Gains:
     def RobustMRACwithBASELINE(mass_total_estimated,air_density_estimated,surface_area_estimated,drag_coefficient_matrix_estimated):
         
         # Number of states to be integrated by RK4
-        number_of_states = 100
+        number_of_states = 104
         # Length of the array vector that will be exported 
-        size_DATA = 74 
+        # size_DATA = 74
+        size_DATA = 78 # +4 to output KF ref. roll, ref. pitch angles derivatives
         # size_DATA = 94 # OLD data format
         
         # ----------------------------------------------------------------
@@ -394,9 +398,10 @@ class Gains:
     def RobustTwoLayerMRACwithBASELINE(mass_total_estimated,air_density_estimated,surface_area_estimated,drag_coefficient_matrix_estimated):
         
         # Number of states to be integrated by RK4
-        number_of_states = 136
+        number_of_states = 140
         # Length of the array vector that will be exported 
-        size_DATA = 74
+        # size_DATA = 74
+        size_DATA = 78 # +4 to output KF ref. roll, ref. pitch angles derivatives
         # size_DATA = 94 # OLD data format
         
         # ----------------------------------------------------------------
@@ -534,9 +539,10 @@ class Gains:
     def HybridMRACwithBASELINE(mass_total_estimated,air_density_estimated,surface_area_estimated,drag_coefficient_matrix_estimated):
         
         # Number of states to be integrated by RK4
-        number_of_states = 102
+        number_of_states = 106
         # Length of the array vector that will be exported 
-        size_DATA = 74 
+        # size_DATA = 74
+        size_DATA = 78 # +4 to output KF ref. roll, ref. pitch angles derivatives
         # size_DATA = 94 # OLD data format
         
         # ----------------------------------------------------------------
@@ -650,9 +656,10 @@ class Gains:
     def HybridTwoLayerMRACwithBASELINE(mass_total_estimated,air_density_estimated,surface_area_estimated,drag_coefficient_matrix_estimated):
         
         # Number of states to be integrated by RK4
-        number_of_states = 140
+        number_of_states = 144
         # Length of the array vector that will be exported 
-        size_DATA = 74
+        # size_DATA = 74
+        size_DATA = 78 # +4 to output KF ref. roll, ref. pitch angles derivatives
         # size_DATA = 94 # OLD data format
         
         # ----------------------------------------------------------------
@@ -796,9 +803,10 @@ class Gains:
     def HybridRobustMRACwithBASELINE(mass_total_estimated,air_density_estimated,surface_area_estimated,drag_coefficient_matrix_estimated):
         
         # Number of states to be integrated by RK4
-        number_of_states = 102
+        number_of_states = 106
         # Length of the array vector that will be exported 
-        size_DATA = 74 
+        # size_DATA = 74
+        size_DATA = 78 # +4 to output KF ref. roll, ref. pitch angles derivatives
         # size_DATA = 94 # OLD data format
         
         # ----------------------------------------------------------------
@@ -927,9 +935,10 @@ class Gains:
     def HybridRobustTwoLayerMRACwithBASELINE(mass_total_estimated,air_density_estimated,surface_area_estimated,drag_coefficient_matrix_estimated):
         
         # Number of states to be integrated by RK4
-        number_of_states = 140
+        number_of_states = 144
         # Length of the array vector that will be exported 
-        size_DATA = 74
+        # size_DATA = 74
+        size_DATA = 78 # +4 to output KF ref. roll, ref. pitch angles derivatives
         # size_DATA = 94 # OLD data format
         
         # ----------------------------------------------------------------
@@ -1091,9 +1100,10 @@ class Gains:
     def FunnelMRACwithBASELINE(mass_total_estimated,air_density_estimated,surface_area_estimated,drag_coefficient_matrix_estimated):
          
         # Number of states to be integrated by RK4
-        number_of_states = 102
+        number_of_states = 106
         # Length of the array vector that will be exported 
-        size_DATA = 74 
+        # size_DATA = 74
+        size_DATA = 78 # +4 to output KF ref. roll, ref. pitch angles derivatives
         # size_DATA = 94 # OLD data format
         
         # ----------------------------------------------------------------
@@ -1211,9 +1221,10 @@ class Gains:
     def FunnelTwoLayerMRACwithBASELINE(mass_total_estimated,air_density_estimated,surface_area_estimated,drag_coefficient_matrix_estimated):
         
         # Number of states to be integrated by RK4
-        number_of_states = 138
+        number_of_states = 142
         # Length of the array vector that will be exported 
-        size_DATA = 74
+        # size_DATA = 74
+        size_DATA = 78 # +4 to output KF ref. roll, ref. pitch angles derivatives
         # size_DATA = 94 # OLD data format
         
         # ----------------------------------------------------------------
@@ -1355,10 +1366,12 @@ class Gains:
         
         # Number of states to be integrated by RK4
         # number_of_states = 100
-        number_of_states = 106
+        number_of_states = 110
         # Length of the array vector that will be exported 
         # size_DATA = 74 
-        size_DATA = 86 
+        # size_DATA = 86
+        size_DATA = 90 # +4 to output KF ref. roll, ref. pitch angles derivatives
+        
         
         # ----------------------------------------------------------------
         #                     Baseline Parameters
